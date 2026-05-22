@@ -51,7 +51,7 @@ python main.py
 
 1. Loyihani GitHub repositoryga yuklang.
 2. Railway yoki Renderda yangi Python service yarating.
-3. Environment variables bo'limiga quyidagilarni kiriting:
+3. Railway/Render ichida `Variables` yoki `Environment variables` bo'limiga quyidagilarni kiriting:
    - `BOT_TOKEN`
    - `OPENAI_API_KEY`
    - `OPENAI_MODEL` ixtiyoriy
@@ -62,6 +62,8 @@ python main.py
 ```
 
 Bot long polling orqali ishlaydi, alohida webhook sozlash shart emas.
+
+Railway logida `BOT_TOKEN environment variable sozlanmagan` chiqsa, demak token hali Railway service variables ichiga qo'yilmagan. `.env` fayl GitHubga yuklanmaydi va Railway uni avtomatik ko'rmaydi.
 
 ## Eslatma
 

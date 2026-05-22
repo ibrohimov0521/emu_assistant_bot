@@ -212,7 +212,7 @@ def parse_openai_output(response: Any) -> list[dict[str, Any]]:
 
 def call_openai_with_text(text: str) -> list[dict[str, Any]]:
     if openai_client is None:
-        raise RuntimeError("OPENAI_API_KEY .env faylda sozlanmagan.")
+        raise RuntimeError("OPENAI_API_KEY environment variable sozlanmagan.")
 
     response = openai_client.responses.create(
         model=OPENAI_MODEL,
@@ -237,7 +237,7 @@ def call_openai_with_text(text: str) -> list[dict[str, Any]]:
 
 def call_openai_with_image(image_bytes: bytes, mime_type: str) -> list[dict[str, Any]]:
     if openai_client is None:
-        raise RuntimeError("OPENAI_API_KEY .env faylda sozlanmagan.")
+        raise RuntimeError("OPENAI_API_KEY environment variable sozlanmagan.")
 
     encoded = base64.b64encode(image_bytes).decode("utf-8")
     data_url = f"data:{mime_type};base64,{encoded}"
@@ -408,9 +408,13 @@ async def unsupported_handler(message: Message) -> None:
 
 async def main() -> None:
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN .env faylda sozlanmagan.")
+        raise RuntimeError(
+            "BOT_TOKEN environment variable sozlanmagan. Railway > Variables bo'limiga BOT_TOKEN qo'shing."
+        )
     if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY .env faylda sozlanmagan.")
+        raise RuntimeError(
+            "OPENAI_API_KEY environment variable sozlanmagan. Railway > Variables bo'limiga OPENAI_API_KEY qo'shing."
+        )
 
     ensure_excel_file()
 
