@@ -6,9 +6,6 @@ import logging
 import os
 import re
 import shutil
-import urllib.error
-import urllib.request
-import xml.etree.ElementTree as ET
 from copy import copy
 from pathlib import Path
 from typing import Any
@@ -26,9 +23,6 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-TOWNLIST_URL = os.getenv("TOWNLIST_URL")
-TOWNLIST_AUTH_EXTRA = os.getenv("TOWNLIST_AUTH_EXTRA")
-TOWNLIST_COUNTRY = os.getenv("TOWNLIST_COUNTRY")
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -118,8 +112,7 @@ CUSTOMER_SCHEMA: dict[str, Any] = {
                     "full_name": {"type": "string"},
                     "phone": {"type": "string"},
                     "address": {"type": "string"},
-                    "recipient_town_ru": {"type": "string"},
-                    "recipient_town_search_ru": {"type": "string"},
+                    "recipient_region_ru": {"type": "string"},
                     "note": {"type": "string"},
                     "needs_review": {"type": "string"},
                 },
@@ -128,8 +121,7 @@ CUSTOMER_SCHEMA: dict[str, Any] = {
                     "full_name",
                     "phone",
                     "address",
-                    "recipient_town_ru",
-                    "recipient_town_search_ru",
+                    "recipient_region_ru",
                     "note",
                     "needs_review",
                 ],
@@ -149,8 +141,7 @@ Ajratiladigan maydonlar:
 - full_name: ism familiya bor bo'lsa
 - phone: telefon raqami asl matndagi ko'rinishida, hech narsa to'qimang
 - address: manzil
-- recipient_town_ru: faqat yetkazib berish dasturidagi "Справочник городов" town/name formatiga o'xshash aniq aholi punkti nomini rus tilida yozing. Viloyat + tuman formatini yozmang. Masalan: "Ташкент город", "Бухара город", "Шафиркан город", "Бука город", "Богот город". Ishonch bo'lmasa bo'sh string
-- recipient_town_search_ru: справочникдан qidirish uchun qisqa ruscha qidiruv iborasi. Masalan: "Ташкент", "Бухара", "Шафиркан", "Бука", "Богот"
+- recipient_region_ru: oluvchining shahar, tuman yoki viloyatini manzildan aniqlang va rus tilida yozing. Masalan: Ташкент, Бухара, Шафиркан. Ishonch bo'lmasa bo'sh string
 - note: boshqa foydali izohlar, noaniq yoki yo'qolmasligi kerak bo'lgan bo'laklar
 - needs_review: noaniq o'qilgan, telefon raqami shubhali, rasm sifati past, yoki maydonlar aralash bo'lsa qisqa izoh
 
@@ -161,7 +152,6 @@ Qoidalar:
 - Ism yo'q bo'lsa "Mijoz", "Noma'lum", "Customer" kabi placeholder yozmang, full_name bo'sh string bo'lsin.
 - Bitta xabarda bitta ism/manzil va bir nechta telefon raqami bo'lsa, buni bitta mijoz deb oling: asosiy telefonni phone maydoniga, qolgan telefonlarni note maydoniga yozing.
 - Faqat aniq boshqa-boshqa mijozlar bo'lsa alohida obyekt qiling.
-- recipient_town_ru maydoniga "Ферганская область, Учкуприкский район" yoki "Андижанская область" kabi region/rayon matnlarini yozmang.
 - Javob faqat schema bo'yicha bo'lsin.
 """.strip()
 
@@ -266,57 +256,6 @@ def clean_name(value: Any) -> str:
     if name.lower() in {"mijoz", "noma'lum", "nomalum", "unknown", "customer"}:
         return ""
     return name
-
-
-def build_townlist_request(search_text: str) -> bytes:
-    root = ET.Element("townlist")
-    if TOWNLIST_AUTH_EXTRA:
-        ET.SubElement(root, "auth", {"extra": TOWNLIST_AUTH_EXTRA})
-
-    conditions = ET.SubElement(root, "conditions")
-    ET.SubElement(conditions, "namecontainsparts").text = search_text
-    if TOWNLIST_COUNTRY:
-        ET.SubElement(conditions, "country").text = TOWNLIST_COUNTRY
-
-    limit = ET.SubElement(root, "limit")
-    ET.SubElement(limit, "limitcount").text = "1"
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
-
-
-def lookup_town_name(search_text: str) -> str:
-    if not TOWNLIST_URL or not search_text:
-        return ""
-
-    payload = build_townlist_request(search_text)
-    request = urllib.request.Request(
-        TOWNLIST_URL,
-        data=payload,
-        headers={"Content-Type": "application/xml; charset=utf-8"},
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            response_body = response.read()
-    except (urllib.error.URLError, TimeoutError) as error:
-        logger.warning("Townlist lookup failed for %r: %s", search_text, error)
-        return ""
-
-    try:
-        root = ET.fromstring(response_body)
-    except ET.ParseError as error:
-        logger.warning("Townlist XML parse failed for %r: %s", search_text, error)
-        return ""
-
-    town_name = root.findtext("./town/name")
-    return clean_text(town_name)
-
-
-def resolve_recipient_town(customer: dict[str, Any]) -> str:
-    search_text = clean_text(customer.get("recipient_town_search_ru"))
-    ai_town = clean_text(customer.get("recipient_town_ru") or customer.get("recipient_region_ru"))
-    directory_town = lookup_town_name(search_text or ai_town)
-    return directory_town or ai_town
 
 
 def parse_bool(value: str) -> str | None:
@@ -505,7 +444,7 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
                 sender["sender_address"],
                 sender["sender_phone"],
                 sender["sender_city_ru"],
-                resolve_recipient_town(customer),
+                clean_text(customer.get("recipient_region_ru")),
                 sender["payment_by_receiver"],
                 review,
             ]
