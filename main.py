@@ -459,9 +459,18 @@ def clean_text(value: Any) -> str:
 
 def clean_name(value: Any) -> str:
     name = clean_text(value)
-    if name.lower() in {"mijoz", "noma'lum", "nomalum", "unknown", "customer"}:
-        return ""
+    if not name or name.lower() in {"mijoz", "noma'lum", "nomalum", "unknown", "customer"}:
+        return "MIJOZ"
     return name
+
+
+def clean_address(value: Any, recipient_location: str) -> str:
+    address = clean_text(value)
+    if address:
+        return address
+    if recipient_location:
+        return f"{recipient_location} markazi"
+    return ""
 
 
 def normalize_location_key(value: str) -> str:
@@ -791,7 +800,7 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
                 "",
                 clean_name(customer.get("full_name")),
                 clean_name(customer.get("full_name")),
-                clean_text(customer.get("address")),
+                clean_address(customer.get("address"), recipient_location),
                 normalized_phone,
                 "",
                 sender["parcel_weight"],
