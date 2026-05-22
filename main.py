@@ -566,33 +566,49 @@ LOCATION_ALIAS_BY_KEY = {
 
 
 def resolve_allowed_recipient_location(customer: dict[str, Any]) -> tuple[str, str]:
-    candidates = [
+    address_values = [
         clean_text(customer.get("address")),
         clean_text(customer.get("note")),
+    ]
+    fallback_values = [
         clean_text(customer.get("recipient_region_ru")),
     ]
-    combined = " ".join(candidate for candidate in candidates if candidate)
-    search_values = [candidate for candidate in candidates if candidate]
-    if combined:
-        search_values.append(combined)
 
-    for value in search_values:
+    for value in [candidate for candidate in address_values if candidate]:
         key = normalize_location_key(value)
         if key in LOCATION_BY_KEY:
             return LOCATION_BY_KEY[key], ""
         if key in LOCATION_ALIAS_BY_KEY:
             return LOCATION_ALIAS_BY_KEY[key], ""
 
-    combined_key = normalize_location_key(combined)
+    address_key = normalize_location_key(" ".join(candidate for candidate in address_values if candidate))
+    fallback_key = normalize_location_key(" ".join(candidate for candidate in fallback_values if candidate))
+    combined_key = normalize_location_key(" ".join(address_values + fallback_values))
+
     for alias_key, location in sorted(LOCATION_ALIAS_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
-        if alias_key and alias_key in combined_key:
+        if alias_key and alias_key in address_key:
             return location, ""
 
     for location_key, location in sorted(LOCATION_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
-        if location_key and location_key in combined_key:
+        if location_key and location_key in address_key:
             return location, ""
 
-    matches = get_close_matches(combined_key, list(LOCATION_BY_KEY.keys()), n=1, cutoff=0.84)
+    for value in [candidate for candidate in fallback_values if candidate]:
+        key = normalize_location_key(value)
+        if key in LOCATION_BY_KEY:
+            return LOCATION_BY_KEY[key], ""
+        if key in LOCATION_ALIAS_BY_KEY:
+            return LOCATION_ALIAS_BY_KEY[key], ""
+
+    for alias_key, location in sorted(LOCATION_ALIAS_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        if alias_key and alias_key in fallback_key:
+            return location, ""
+
+    for location_key, location in sorted(LOCATION_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        if location_key and location_key in fallback_key:
+            return location, ""
+
+    matches = get_close_matches(address_key or combined_key, list(LOCATION_BY_KEY.keys()), n=1, cutoff=0.84)
     if matches:
         return LOCATION_BY_KEY[matches[0]], ""
 
