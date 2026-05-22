@@ -11,7 +11,7 @@ Bu bot yordamida Telegramdagi mijozlar ma'lumotlarini tartiblash, matn yoki rasm
 - Bir xabardagi bir nechta mijozni alohida Excel qatorlariga yozish
 - Telefonlarni `998XXXXXXXXX` formatiga keltirish
 - Jo'natmalarga qaytarilmaydigan shifr berish: `ABC1`, `ABC2`, `ABC3`...
-- Oluvchi hududini rus tilida AI orqali aniqlash
+- P ustunga faqat import dasturidagi справочникka mos ruscha shahar/tuman nomini yozish
 - `/excel` - tayyor Excel faylni yuborish
 - `/clear` - ro'yxatni tozalash
 - `/help` - foydalanish bo'yicha yordam
@@ -92,6 +92,8 @@ python main.py
 Bot long polling orqali ishlaydi, alohida webhook sozlash shart emas.
 
 Railway logida `BOT_TOKEN environment variable sozlanmagan` chiqsa, demak token hali Railway service variables ichiga qo'yilmagan. `.env` fayl GitHubga yuklanmaydi va Railway uni avtomatik ko'rmaydi.
+
+P ustun (`Город-получатель`) uchun bot `Ферганская область, Учкуприкский район` kabi uzun format yozmaydi. U faqat ichki ro'yxatdagi справочник nomlaridan birini yozadi, masalan: `Учкуприк`, `Бука`, `Тайлак`, `Каракуль`, `Алмазар`.
 
 ## Eslatma
 

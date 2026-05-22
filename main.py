@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+from difflib import get_close_matches
 from copy import copy
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,209 @@ SETUP_STEPS = [
     ),
 ]
 
+ALLOWED_RECIPIENT_LOCATIONS = [
+    "Ташкент",
+    "Алмазар",
+    "Бектемир",
+    "Мирабад",
+    "Мирзо-Улугбек",
+    "Сергели",
+    "Учтепа",
+    "Чиланзар",
+    "Шайхантахур",
+    "Юнусабад",
+    "Яккасарай",
+    "Янгихаёт",
+    "Яшнабад",
+    "Андижан",
+    "Алтинкул",
+    "Асака",
+    "Балыкчи",
+    "Боз",
+    "Булокбоши",
+    "Джалакудук",
+    "Избаскан",
+    "Куйган - яр",
+    "Кургантепа",
+    "Мархамат",
+    "Пахтаабад",
+    "Улугнор",
+    "Ханабад",
+    "Ходжаабад",
+    "Шахрихан",
+    "Бухара",
+    "Алат",
+    "Вабкент",
+    "Галлаасия",
+    "Гиждуван",
+    "Джандар",
+    "Каган",
+    "Каракуль",
+    "Караулбазар",
+    "Пешку",
+    "Ромитан",
+    "Шафиркан",
+    "Джизак",
+    "Арнасай",
+    "Балангачкыр",
+    "Бахмал",
+    "Гагарин",
+    "Галляарал",
+    "Дустлик",
+    "Заамин",
+    "Зарбдар",
+    "Зафарабад",
+    "Пахтакор",
+    "Шараф-Рашидов",
+    "Янгикишлак",
+    "Карши",
+    "Бешкент",
+    "Гузар",
+    "Дехканабадский район",
+    "Камаши",
+    "Касан",
+    "Касбий",
+    "Китоб",
+    "Кокдала",
+    "Миришкор",
+    "Мубарек",
+    "Нишан",
+    "Чиракчи",
+    "Шахрисабз",
+    "Яккабаг",
+    "Навои",
+    "Бешрабат",
+    "Зарафшан",
+    "Канимех",
+    "Кармана",
+    "Кызылтепа",
+    "Нурата",
+    "Тамдыбулак",
+    "Учкудук",
+    "Хатырчи",
+    "Наманган",
+    "Джумашуй",
+    "Касансай",
+    "Пап",
+    "Ташбулак",
+    "Туракурган",
+    "Уйчи",
+    "Учкурган",
+    "Хаккулабад",
+    "Чартак",
+    "Чуст",
+    "Янгикурган",
+    "Нукус",
+    "Акмангит",
+    "Амударья",
+    "Беруни",
+    "Казакеткен",
+    "Канлыкуль",
+    "Караузяк",
+    "Кегейли",
+    "Кунград",
+    "Муйнак",
+    "Тахиаташ",
+    "Тахтакупыр",
+    "Турткуль",
+    "Ходжейли",
+    "Чимбай",
+    "Шуманай",
+    "Элликкала",
+    "Самарканд",
+    "Акташ",
+    "Булунгур",
+    "Гульабад",
+    "Джамбай",
+    "Джума",
+    "Зиадин",
+    "Иштыхан",
+    "Каттакурган",
+    "Кушрабад",
+    "Лаиш",
+    "Нурабад",
+    "Пайарык",
+    "Тайлак",
+    "Ургут",
+    "Термез",
+    "Ангор",
+    "Байсун",
+    "Бандихан",
+    "Денау",
+    "Джаркурган",
+    "Карлук",
+    "Кизирик",
+    "Кумкурган",
+    "Сариасия",
+    "Узун",
+    "Учкизил",
+    "Халкабад",
+    "Шерабад",
+    "Шурчи",
+    "Гулистан",
+    "Акалтын",
+    "Бахт",
+    "Дехканабад",
+    "Навруз",
+    "Сайхун",
+    "Сардоба",
+    "Сырдарья",
+    "Хаваст",
+    "Ширин",
+    "Янгиер",
+    "Нурафшон",
+    "Аккурган",
+    "Алмалык",
+    "Ангрен",
+    "Ахангаран",
+    "Бекабад",
+    "Бука",
+    "Верхне-Чирчикский",
+    "Газалкент",
+    "Дустабад",
+    "Зангиата",
+    "Келес",
+    "Кибрай",
+    "Паркент",
+    "Пскент",
+    "Чиназ",
+    "Чирчик",
+    "Янгийоль",
+    "Фергана",
+    "Алтыарык",
+    "Багдад",
+    "Бешарык",
+    "Бувайда",
+    "Водил",
+    "Дангара",
+    "Коканд",
+    "Кува",
+    "Кувасай",
+    "Куштепа",
+    "Маргилан",
+    "Навбахор",
+    "Риштан",
+    "Сох",
+    "Ташлак",
+    "Учкуприк",
+    "Язъяван",
+    "Яйпан",
+    "Ургенч",
+    "Багат",
+    "Гурлен",
+    "Караул",
+    "Кошкупыр",
+    "Тупраккала",
+    "Хазарасп",
+    "Ханка",
+    "Хива",
+    "Шават",
+    "Янгиарык",
+    "Янгибазар",
+]
+
+LOCATION_LIST_FOR_PROMPT = ", ".join(ALLOWED_RECIPIENT_LOCATIONS)
+
 
 CUSTOMER_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -141,7 +345,8 @@ Ajratiladigan maydonlar:
 - full_name: ism familiya bor bo'lsa
 - phone: telefon raqami asl matndagi ko'rinishida, hech narsa to'qimang
 - address: manzil
-- recipient_region_ru: oluvchining shahar, tuman yoki viloyatini manzildan aniqlang va rus tilida yozing. Masalan: Ташкент, Бухара, Шафиркан. Ishonch bo'lmasa bo'sh string
+- recipient_region_ru: oluvchining manzilidan P ustun uchun mos shahar/tuman nomini rus tilida tanlang. Faqat quyidagi ro'yxatdan bittasini yozing, boshqa format yozmang:
+{location_list}
 - note: boshqa foydali izohlar, noaniq yoki yo'qolmasligi kerak bo'lgan bo'laklar
 - needs_review: noaniq o'qilgan, telefon raqami shubhali, rasm sifati past, yoki maydonlar aralash bo'lsa qisqa izoh
 
@@ -152,8 +357,9 @@ Qoidalar:
 - Ism yo'q bo'lsa "Mijoz", "Noma'lum", "Customer" kabi placeholder yozmang, full_name bo'sh string bo'lsin.
 - Bitta xabarda bitta ism/manzil va bir nechta telefon raqami bo'lsa, buni bitta mijoz deb oling: asosiy telefonni phone maydoniga, qolgan telefonlarni note maydoniga yozing.
 - Faqat aniq boshqa-boshqa mijozlar bo'lsa alohida obyekt qiling.
+- recipient_region_ru hech qachon "Ферганская область, Учкуприкский район" kabi bo'lmasin; ro'yxatdagi "Учкуприк" kabi bitta qiymat bo'lsin.
 - Javob faqat schema bo'yicha bo'lsin.
-""".strip()
+""".strip().format(location_list=LOCATION_LIST_FOR_PROMPT)
 
 
 def apply_template_header(sheet: Any) -> None:
@@ -256,6 +462,141 @@ def clean_name(value: Any) -> str:
     if name.lower() in {"mijoz", "noma'lum", "nomalum", "unknown", "customer"}:
         return ""
     return name
+
+
+def normalize_location_key(value: str) -> str:
+    value = value.lower().replace("ё", "е")
+    replacements = {
+        "ў": "у",
+        "ғ": "г",
+        "ģ": "g",
+        "ğ": "g",
+        "қ": "к",
+        "ҳ": "х",
+        "ʼ": "",
+        "‘": "",
+        "’": "",
+        "'": "",
+        "`": "",
+        " - ": "-",
+    }
+    for source, target in replacements.items():
+        value = value.replace(source, target)
+    return re.sub(r"[^a-zа-я0-9]+", "", value)
+
+
+LOCATION_BY_KEY = {
+    normalize_location_key(location): location for location in ALLOWED_RECIPIENT_LOCATIONS
+}
+
+LOCATION_ALIASES = {
+    "bogot": "Багат",
+    "bogat": "Багат",
+    "boot": "Багат",
+    "bogot tumani": "Багат",
+    "bagat": "Багат",
+    "olmazor": "Алмазар",
+    "almazar": "Алмазар",
+    "yunusobod": "Юнусабад",
+    "yunusabad": "Юнусабад",
+    "sergeli": "Сергели",
+    "bekobod": "Бекабад",
+    "bekabad": "Бекабад",
+    "boka": "Бука",
+    "buka": "Бука",
+    "buka tumani": "Бука",
+    "zafar": "Бекабад",
+    "guliston": "Гулистан",
+    "gulistan": "Гулистан",
+    "tayloq": "Тайлак",
+    "taylak": "Тайлак",
+    "tayloqtumani": "Тайлак",
+    "taylaktumani": "Тайлак",
+    "payariq": "Пайарык",
+    "payarik": "Пайарык",
+    "payaryk": "Пайарык",
+    "payariqtumani": "Пайарык",
+    "payariktumani": "Пайарык",
+    "samarqand": "Самарканд",
+    "samarkand": "Самарканд",
+    "rudakiy": "Самарканд",
+    "qorakol": "Каракуль",
+    "qorakul": "Каракуль",
+    "karakul": "Каракуль",
+    "buxoro": "Бухара",
+    "bukhara": "Бухара",
+    "shofirkon": "Шафиркан",
+    "shafirkan": "Шафиркан",
+    "angor": "Ангор",
+    "angor tumani": "Ангор",
+    "surxondaryo angor": "Ангор",
+    "zarbdor": "Зарбдар",
+    "zarbdor tumani": "Зарбдар",
+    "jizzax zarbdor": "Зарбдар",
+    "sharof rashidov": "Шараф-Рашидов",
+    "fargona": "Фергана",
+    "fergana": "Фергана",
+    "uchkoprik": "Учкуприк",
+    "uchkuprik": "Учкуприк",
+    "uchkopriktumani": "Учкуприк",
+    "uchkupraktumani": "Учкуприк",
+    "uchkoprik tumani": "Учкуприк",
+    "oltiariq": "Алтыарык",
+    "oltiriq": "Алтыарык",
+    "oltariq": "Алтыарык",
+    "oltiarik": "Алтыарык",
+    "oltirik": "Алтыарык",
+    "oltiriqtumani": "Алтыарык",
+    "oltiariqtumani": "Алтыарык",
+    "oltiariq tumani": "Алтыарык",
+    "altyaryk": "Алтыарык",
+    "andijon": "Андижан",
+    "andijan": "Андижан",
+    "qorgontepa": "Кургантепа",
+    "kurgantepa": "Кургантепа",
+    "qurgontepa": "Кургантепа",
+    "paxtaobod": "Пахтаабад",
+    "paxtaabad": "Пахтаабад",
+    "pakhtaabad": "Пахтаабад",
+}
+
+LOCATION_ALIAS_BY_KEY = {
+    normalize_location_key(alias): location for alias, location in LOCATION_ALIASES.items()
+}
+
+
+def resolve_allowed_recipient_location(customer: dict[str, Any]) -> tuple[str, str]:
+    candidates = [
+        clean_text(customer.get("address")),
+        clean_text(customer.get("note")),
+        clean_text(customer.get("recipient_region_ru")),
+    ]
+    combined = " ".join(candidate for candidate in candidates if candidate)
+    search_values = [candidate for candidate in candidates if candidate]
+    if combined:
+        search_values.append(combined)
+
+    for value in search_values:
+        key = normalize_location_key(value)
+        if key in LOCATION_BY_KEY:
+            return LOCATION_BY_KEY[key], ""
+        if key in LOCATION_ALIAS_BY_KEY:
+            return LOCATION_ALIAS_BY_KEY[key], ""
+
+    combined_key = normalize_location_key(combined)
+    for alias_key, location in sorted(LOCATION_ALIAS_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        if alias_key and alias_key in combined_key:
+            return location, ""
+
+    for location_key, location in sorted(LOCATION_BY_KEY.items(), key=lambda item: len(item[0]), reverse=True):
+        if location_key and location_key in combined_key:
+            return location, ""
+
+    matches = get_close_matches(combined_key, list(LOCATION_BY_KEY.keys()), n=1, cutoff=0.84)
+    if matches:
+        return LOCATION_BY_KEY[matches[0]], ""
+
+    return "", "P ustun uchun справочникdagi shahar/tuman topilmadi"
 
 
 def parse_bool(value: str) -> str | None:
@@ -421,9 +762,11 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
     rows = []
     for customer in customers:
         normalized_phone, phone_review = normalize_phone(clean_text(customer.get("phone")))
+        recipient_location, location_review = resolve_allowed_recipient_location(customer)
         review_parts = [
             clean_text(customer.get("needs_review")),
             phone_review,
+            location_review,
         ]
         review = "; ".join(part for part in review_parts if part)
 
@@ -444,7 +787,7 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
                 sender["sender_address"],
                 sender["sender_phone"],
                 sender["sender_city_ru"],
-                clean_text(customer.get("recipient_region_ru")),
+                recipient_location,
                 sender["payment_by_receiver"],
                 review,
             ]
