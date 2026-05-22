@@ -5,6 +5,8 @@ import json
 import logging
 import os
 import re
+import shutil
+from copy import copy
 from pathlib import Path
 from typing import Any
 
@@ -24,15 +26,28 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
+TEMPLATE_DIR = BASE_DIR / "templates"
+TEMPLATE_PATH = TEMPLATE_DIR / "yangi_shablon.xlsx"
 EXCEL_PATH = DATA_DIR / "customers.xlsx"
 
 HEADERS = [
-    "No",
-    "Ism familiya",
-    "Telefon raqami",
-    "Manzil",
-    "Qo'shimcha izoh",
-    "Tekshirish kerak",
+    "Номер",
+    "Компания-получатель",
+    "ФИО получателя",
+    "Адрес получателя",
+    "Телефон получателя",
+    "Шифр клиента",
+    "Масса посылки",
+    "Поручение",
+    "Количество мест",
+    "Штрихкод (№ накладной)",
+    "Компания-отправитель",
+    "ФИО отправителя",
+    "Адрес отправителя",
+    "Телефон отправителя",
+    "Город-отправитель",
+    "Город-получатель",
+    "Оплата получателем",
 ]
 
 logging.basicConfig(
@@ -43,6 +58,44 @@ logger = logging.getLogger(__name__)
 
 excel_lock = asyncio.Lock()
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+sender_sessions: dict[int, dict[str, str]] = {}
+setup_states: dict[int, dict[str, Any]] = {}
+
+
+SETUP_STEPS = [
+    (
+        "sender_full_name",
+        "Jo'natuvchining ism familiyasini kiriting.",
+    ),
+    (
+        "sender_phone",
+        "Jo'natuvchining telefon raqamini kiriting. Masalan: +998 90 123 45 67",
+    ),
+    (
+        "sender_address",
+        "Jo'natuvchining to'liq manzilini kiriting.",
+    ),
+    (
+        "sender_city_ru",
+        "Jo'natuvchining shahrini rus tilida kiriting. Masalan: Ташкент, Бухара, Шафиркан",
+    ),
+    (
+        "cipher_prefix",
+        "Jo'natmalar uchun qaytarilmaydigan shifr prefixini kiriting. Masalan: ABC",
+    ),
+    (
+        "payment_by_receiver",
+        "Оплата получателем bo'ladimi? True yoki False deb yozing.",
+    ),
+    (
+        "parcel_weight",
+        "Jo'natma og'irligini kiriting. Masalan: 1.5",
+    ),
+    (
+        "places_count",
+        "Bir mijozga nechta jo'natma bo'lishini kiriting. Masalan: 1",
+    ),
+]
 
 
 CUSTOMER_SCHEMA: dict[str, Any] = {
@@ -59,6 +112,7 @@ CUSTOMER_SCHEMA: dict[str, Any] = {
                     "full_name": {"type": "string"},
                     "phone": {"type": "string"},
                     "address": {"type": "string"},
+                    "recipient_region_ru": {"type": "string"},
                     "note": {"type": "string"},
                     "needs_review": {"type": "string"},
                 },
@@ -67,6 +121,7 @@ CUSTOMER_SCHEMA: dict[str, Any] = {
                     "full_name",
                     "phone",
                     "address",
+                    "recipient_region_ru",
                     "note",
                     "needs_review",
                 ],
@@ -86,6 +141,7 @@ Ajratiladigan maydonlar:
 - full_name: ism familiya bor bo'lsa
 - phone: telefon raqami asl matndagi ko'rinishida, hech narsa to'qimang
 - address: manzil
+- recipient_region_ru: oluvchining shahar, tuman yoki viloyatini manzildan aniqlang va rus tilida yozing. Masalan: Ташкент, Бухара, Шафиркан. Ishonch bo'lmasa bo'sh string
 - note: boshqa foydali izohlar, noaniq yoki yo'qolmasligi kerak bo'lgan bo'laklar
 - needs_review: noaniq o'qilgan, telefon raqami shubhali, rasm sifati past, yoki maydonlar aralash bo'lsa qisqa izoh
 
@@ -102,11 +158,20 @@ def ensure_excel_file() -> None:
     if EXCEL_PATH.exists():
         return
 
+    if TEMPLATE_PATH.exists():
+        shutil.copyfile(TEMPLATE_PATH, EXCEL_PATH)
+        workbook = load_workbook(EXCEL_PATH)
+        sheet = workbook.active
+        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=17):
+            for cell in row:
+                cell.value = None
+        workbook.save(EXCEL_PATH)
+        return
+
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "Customers"
+    sheet.title = "Шаблон"
     sheet.append(HEADERS)
-
     widths = [8, 28, 18, 38, 40, 32]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[chr(64 + index)].width = width
@@ -146,7 +211,166 @@ def clean_text(value: Any) -> str:
     return str(value).strip()
 
 
-def prepare_rows(customers: list[dict[str, Any]]) -> list[list[str]]:
+def parse_bool(value: str) -> str | None:
+    normalized = value.strip().lower()
+    true_values = {"true", "1", "ha", "xa", "yes", "y", "да"}
+    false_values = {"false", "0", "yo'q", "yoq", "yuq", "no", "n", "нет"}
+    if normalized in true_values:
+        return "True"
+    if normalized in false_values:
+        return "False"
+    return None
+
+
+def normalize_cipher_prefix(value: str) -> str:
+    prefix = re.sub(r"\s+", "", value.strip()).upper()
+    return re.sub(r"[^A-ZА-ЯЁ0-9_-]", "", prefix)
+
+
+def find_last_data_row(sheet: Any) -> int:
+    for row_index in range(sheet.max_row, 1, -1):
+        if any(sheet.cell(row_index, col).value not in (None, "") for col in range(1, 18)):
+            return row_index
+    return 1
+
+
+def used_cipher_prefixes(sheet: Any) -> set[str]:
+    prefixes: set[str] = set()
+    for row_index in range(2, sheet.max_row + 1):
+        code = clean_text(sheet.cell(row_index, 6).value)
+        match = re.match(r"^(.+?)(\d+)$", code)
+        if match:
+            prefixes.add(match.group(1).upper())
+    return prefixes
+
+
+def next_cipher_index(sheet: Any, prefix: str) -> int:
+    highest = 0
+    pattern = re.compile(rf"^{re.escape(prefix)}(\d+)$", re.IGNORECASE)
+    for row_index in range(2, sheet.max_row + 1):
+        code = clean_text(sheet.cell(row_index, 6).value)
+        match = pattern.match(code)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return highest + 1
+
+
+def copy_row_style(sheet: Any, source_row: int, target_row: int) -> None:
+    for col in range(1, 18):
+        source = sheet.cell(source_row, col)
+        target = sheet.cell(target_row, col)
+        if source.has_style:
+            target._style = copy(source._style)
+        if source.number_format:
+            target.number_format = source.number_format
+        if source.alignment:
+            target.alignment = copy(source.alignment)
+
+
+def is_cipher_prefix_available(prefix: str) -> bool:
+    ensure_excel_file()
+    workbook = load_workbook(EXCEL_PATH)
+    sheet = workbook.active
+    existing_prefixes = used_cipher_prefixes(sheet)
+    active_prefixes = {
+        session.get("cipher_prefix", "").upper()
+        for session in sender_sessions.values()
+        if session.get("cipher_prefix")
+    }
+    return prefix.upper() not in existing_prefixes and prefix.upper() not in active_prefixes
+
+
+def validate_setup_value(chat_id: int, key: str, value: str) -> tuple[str | None, str | None]:
+    value = clean_text(value)
+    if not value:
+        return None, "Bu maydon bo'sh bo'lmasin. Iltimos, qayta kiriting."
+
+    if key == "sender_phone":
+        normalized, review = normalize_phone(value)
+        if review:
+            return None, "Telefon raqam noaniq. Masalan: 998901234567 yoki +998 90 123 45 67"
+        return normalized, None
+
+    if key == "cipher_prefix":
+        prefix = normalize_cipher_prefix(value)
+        if not prefix:
+            return None, "Shifr faqat harf/raqamlardan iborat bo'lsin. Masalan: ABC"
+        current_session = sender_sessions.get(chat_id, {})
+        if current_session.get("cipher_prefix", "").upper() == prefix:
+            return prefix, None
+        if not is_cipher_prefix_available(prefix):
+            return None, f"{prefix} shifri oldin ishlatilgan. Boshqa prefix kiriting."
+        return prefix, None
+
+    if key == "payment_by_receiver":
+        parsed = parse_bool(value)
+        if parsed is None:
+            return None, "Faqat True yoki False deb yozing."
+        return parsed, None
+
+    if key == "places_count":
+        digits = re.sub(r"\D", "", value)
+        if not digits or int(digits) < 1:
+            return None, "Jo'natma soni 1 yoki undan katta raqam bo'lishi kerak."
+        return str(int(digits)), None
+
+    return value, None
+
+
+def setup_summary(session: dict[str, str]) -> str:
+    return (
+        "Jo'natuvchi ma'lumotlari saqlandi:\n"
+        f"Ism familiya: {session['sender_full_name']}\n"
+        f"Telefon: {session['sender_phone']}\n"
+        f"Manzil: {session['sender_address']}\n"
+        f"Shahar: {session['sender_city_ru']}\n"
+        f"Shifr: {session['cipher_prefix']}1, {session['cipher_prefix']}2, ...\n"
+        f"Оплата получателем: {session['payment_by_receiver']}\n"
+        f"Og'irlik: {session['parcel_weight']}\n"
+        f"Количество мест: {session['places_count']}\n\n"
+        "Endi mijozlar ro'yxatini matn yoki rasm qilib yuboring."
+    )
+
+
+async def start_setup(message: Message, reset: bool = False) -> None:
+    chat_id = message.chat.id
+    if reset:
+        sender_sessions.pop(chat_id, None)
+    setup_states[chat_id] = {"step": 0, "data": {}}
+    await message.answer(
+        "Excel yaratishdan oldin jo'natuvchi ma'lumotlarini kiritamiz.\n\n"
+        f"{SETUP_STEPS[0][1]}"
+    )
+
+
+async def handle_setup_message(message: Message) -> bool:
+    chat_id = message.chat.id
+    state = setup_states.get(chat_id)
+    if state is None:
+        return False
+
+    step_index = state["step"]
+    key, _question = SETUP_STEPS[step_index]
+    parsed_value, error = validate_setup_value(chat_id, key, message.text or "")
+    if error:
+        await message.answer(error)
+        return True
+
+    state["data"][key] = parsed_value or ""
+    step_index += 1
+
+    if step_index >= len(SETUP_STEPS):
+        sender_sessions[chat_id] = state["data"]
+        setup_states.pop(chat_id, None)
+        await message.answer(setup_summary(sender_sessions[chat_id]))
+        return True
+
+    state["step"] = step_index
+    await message.answer(SETUP_STEPS[step_index][1])
+    return True
+
+
+def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> list[list[str]]:
     rows = []
     for customer in customers:
         normalized_phone, phone_review = normalize_phone(clean_text(customer.get("phone")))
@@ -158,19 +382,31 @@ def prepare_rows(customers: list[dict[str, Any]]) -> list[list[str]]:
 
         rows.append(
             [
-                clean_text(customer.get("number")),
+                "",
                 clean_text(customer.get("full_name")),
-                normalized_phone,
+                clean_text(customer.get("full_name")),
                 clean_text(customer.get("address")),
+                normalized_phone,
+                "",
+                sender["parcel_weight"],
                 clean_text(customer.get("note")),
+                sender["places_count"],
+                "",
+                sender["sender_full_name"],
+                sender["sender_full_name"],
+                sender["sender_address"],
+                sender["sender_phone"],
+                sender["sender_city_ru"],
+                clean_text(customer.get("recipient_region_ru")),
+                sender["payment_by_receiver"],
                 review,
             ]
         )
     return rows
 
 
-async def append_customers(customers: list[dict[str, Any]]) -> int:
-    rows = prepare_rows(customers)
+async def append_customers(customers: list[dict[str, Any]], sender: dict[str, str]) -> int:
+    rows = prepare_rows(customers, sender)
     if not rows:
         return 0
 
@@ -179,12 +415,21 @@ async def append_customers(customers: list[dict[str, Any]]) -> int:
         workbook = load_workbook(EXCEL_PATH)
         sheet = workbook.active
 
-        next_number = sheet.max_row
+        next_row = find_last_data_row(sheet) + 1
+        next_number = next_row - 1
+        next_code_index = next_cipher_index(sheet, sender["cipher_prefix"])
         for row in rows:
-            supplied_number = row[0]
-            row[0] = supplied_number if supplied_number else str(next_number)
-            sheet.append(row)
+            copy_row_style(sheet, 2, next_row)
+            row[0] = next_number
+            row[5] = f"{sender['cipher_prefix']}{next_code_index}"
+            review = row.pop()
+            if review:
+                row[7] = "; ".join(part for part in [row[7], review] if part)
+            for column_index, value in enumerate(row, start=1):
+                sheet.cell(next_row, column_index).value = value
+            next_row += 1
             next_number += 1
+            next_code_index += 1
 
         workbook.save(EXCEL_PATH)
 
@@ -273,13 +518,19 @@ def call_openai_with_image(image_bytes: bytes, mime_type: str) -> list[dict[str,
 
 
 async def handle_customers(message: Message, customers: list[dict[str, Any]]) -> None:
+    sender = sender_sessions.get(message.chat.id)
+    if sender is None:
+        await message.answer("Avval jo'natuvchi ma'lumotlarini kiritish kerak.")
+        await start_setup(message)
+        return
+
     if not customers:
         await message.answer(
             "Mijoz ma'lumotlari topilmadi. Iltimos, matnni aniqroq yuboring yoki rasm sifatini yaxshilang."
         )
         return
 
-    count = await append_customers(customers)
+    count = await append_customers(customers, sender)
     await message.answer(
         f"{count} ta mijoz Excel faylga qo'shildi.\n"
         "Faylni olish uchun /excel buyrug'ini yuboring."
@@ -289,30 +540,39 @@ async def handle_customers(message: Message, customers: list[dict[str, Any]]) ->
 async def start_handler(message: Message) -> None:
     await message.answer(
         "Assalomu alaykum!\n\n"
-        "Men mijoz ma'lumotlarini matn yoki rasm ichidan ajratib, Excel faylga yozib boraman.\n\n"
+        "Men jo'natuvchi ma'lumotlari asosida mijoz ma'lumotlarini matn yoki rasm ichidan ajratib, Excel shablonga yozib boraman.\n\n"
         "Yuborishingiz mumkin:\n"
         "- oddiy matn\n"
         "- daftar rasmi\n"
         "- skrinshot\n"
         "- qo'lda yozilgan ma'lumot rasmi\n\n"
+        "Jo'natuvchi ma'lumotlarini qayta sozlash: /setup\n"
         "Excel faylni olish: /excel\n"
         "Ro'yxatni tozalash: /clear\n"
         "Yordam: /help"
     )
+    if message.chat.id not in sender_sessions:
+        await start_setup(message)
 
 
 async def help_handler(message: Message) -> None:
     await message.answer(
         "Foydalanish:\n\n"
         "1. Mijoz ma'lumotlarini matn qilib yuboring yoki rasm jo'nating.\n"
-        "2. Bot ism, telefon, manzil va izohlarni ajratadi.\n"
-        "3. Telefonlar 998XXXXXXXXX formatiga keltiriladi.\n"
-        "4. Noaniq joylar 'Tekshirish kerak' ustuniga yoziladi.\n\n"
+        "2. Agar jo'natuvchi ma'lumotlari kiritilmagan bo'lsa, bot avval ularni so'raydi.\n"
+        "3. Bot oluvchi ism, telefon, manzil, rus tilidagi hudud va izohlarni ajratadi.\n"
+        "4. Telefonlar 998XXXXXXXXX formatiga keltiriladi.\n"
+        "5. Shifrlar prefix bo'yicha ketadi: ABC1, ABC2, ABC3...\n\n"
         "Komandalar:\n"
+        "/setup - jo'natuvchi ma'lumotlarini qayta kiritish\n"
         "/excel - Excel faylni yuboradi\n"
         "/clear - ro'yxatni tozalaydi\n"
         "/help - yordam"
     )
+
+
+async def setup_handler(message: Message) -> None:
+    await start_setup(message, reset=True)
 
 
 async def excel_handler(message: Message) -> None:
@@ -326,11 +586,21 @@ async def excel_handler(message: Message) -> None:
 async def clear_handler(message: Message) -> None:
     async with excel_lock:
         reset_excel_file()
-    await message.answer("Ro'yxat tozalandi. Yangi Excel fayl tayyor.")
+    sender_sessions.pop(message.chat.id, None)
+    setup_states.pop(message.chat.id, None)
+    await message.answer("Ro'yxat tozalandi. Yangi Excel fayl shablondan tayyorlanadi.")
+    await start_setup(message)
 
 
 async def text_handler(message: Message) -> None:
     text = message.text or ""
+    if await handle_setup_message(message):
+        return
+
+    if message.chat.id not in sender_sessions:
+        await start_setup(message)
+        return
+
     processing = await message.answer("Matn tahlil qilinyapti...")
 
     try:
@@ -347,6 +617,14 @@ async def text_handler(message: Message) -> None:
 
 
 async def photo_handler(message: Message, bot: Bot) -> None:
+    if message.chat.id in setup_states:
+        await message.answer("Hozir jo'natuvchi ma'lumotlarini matn ko'rinishida kiriting.")
+        return
+
+    if message.chat.id not in sender_sessions:
+        await start_setup(message)
+        return
+
     processing = await message.answer("Rasm o'qilyapti va tahlil qilinyapti...")
 
     try:
@@ -373,6 +651,14 @@ async def photo_handler(message: Message, bot: Bot) -> None:
 
 
 async def document_image_handler(message: Message, bot: Bot) -> None:
+    if message.chat.id in setup_states:
+        await message.answer("Hozir jo'natuvchi ma'lumotlarini matn ko'rinishida kiriting.")
+        return
+
+    if message.chat.id not in sender_sessions:
+        await start_setup(message)
+        return
+
     document = message.document
     if document is None or not (document.mime_type or "").startswith("image/"):
         await message.answer("Iltimos, rasm yoki mijoz ma'lumotlari yozilgan matn yuboring.")
@@ -410,6 +696,7 @@ async def setup_bot_commands(bot: Bot) -> None:
     await bot.set_my_commands(
         [
             BotCommand(command="start", description="Botni ishga tushirish"),
+            BotCommand(command="setup", description="Jo'natuvchi ma'lumotlarini sozlash"),
             BotCommand(command="help", description="Foydalanish bo'yicha yordam"),
             BotCommand(command="excel", description="Excel faylni yuborish"),
             BotCommand(command="clear", description="Ro'yxatni tozalash"),
@@ -434,6 +721,7 @@ async def main() -> None:
     await setup_bot_commands(bot)
 
     dispatcher.message.register(start_handler, Command("start"))
+    dispatcher.message.register(setup_handler, Command("setup"))
     dispatcher.message.register(help_handler, Command("help"))
     dispatcher.message.register(excel_handler, Command("excel"))
     dispatcher.message.register(clear_handler, Command("clear"))

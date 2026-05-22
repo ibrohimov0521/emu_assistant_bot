@@ -5,23 +5,51 @@ Bu bot yordamida Telegramdagi mijozlar ma'lumotlarini tartiblash, matn yoki rasm
 ## Imkoniyatlar
 
 - `/start` - bot haqida qisqa tushuntirish
+- `/setup` - jo'natuvchi ma'lumotlari va jo'natma parametrlarini qayta sozlash
 - Matndan mijozlarni ajratish
 - Rasm, skrinshot yoki qo'lda yozilgan daftar rasmlaridan ma'lumot ajratish
 - Bir xabardagi bir nechta mijozni alohida Excel qatorlariga yozish
 - Telefonlarni `998XXXXXXXXX` formatiga keltirish
-- Noaniq telefon yoki o'qilishi qiyin joylarni `Tekshirish kerak` ustuniga yozish
+- Jo'natmalarga qaytarilmaydigan shifr berish: `ABC1`, `ABC2`, `ABC3`...
+- Oluvchi hududini rus tilida AI orqali aniqlash
 - `/excel` - tayyor Excel faylni yuborish
 - `/clear` - ro'yxatni tozalash
 - `/help` - foydalanish bo'yicha yordam
 
 ## Excel ustunlari
 
-- No
-- Ism familiya
-- Telefon raqami
-- Manzil
-- Qo'shimcha izoh
-- Tekshirish kerak
+- A: Номер
+- B: Компания-получатель
+- C: ФИО получателя
+- D: Адрес получателя
+- E: Телефон получателя
+- F: Шифр клиента
+- G: Масса посылки
+- H: Поручение
+- I: Количество мест
+- J: Штрихкод (№ накладной)
+- K: Компания-отправитель
+- L: ФИО отправителя
+- M: Адрес отправителя
+- N: Телефон отправителя
+- O: Город-отправитель
+- P: Город-получатель
+- Q: Оплата получателем
+
+## Ishlash tartibi
+
+Bot Excelga yozishdan oldin quyidagilarni so'raydi:
+
+- jo'natuvchi ism familiyasi
+- jo'natuvchi telefon raqami
+- jo'natuvchi to'liq manzili
+- jo'natuvchi shahri rus tilida
+- shifr prefixi, masalan `ABC`
+- `Оплата получателем`: `True` yoki `False`
+- hamma jo'natmalar uchun bir xil og'irlik
+- bir mijozga nechta jo'natma bo'lishi
+
+Shundan keyin mijozlar matn yoki rasm qilib yuboriladi. Bot oluvchilarni ajratib, `templates/yangi_shablon.xlsx` asosida `data/customers.xlsx` faylini yaratadi.
 
 ## O'rnatish
 
