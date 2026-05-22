@@ -1,6 +1,6 @@
-# Telegram mijozlarni Excelga yozuvchi bot
+# emu_assistant_bot
 
-Bu bot Telegram orqali yuborilgan matn yoki rasm ichidan mijoz ma'lumotlarini ajratadi va `data/customers.xlsx` fayliga qo'shib boradi.
+Bu bot yordamida Telegramdagi mijozlar ma'lumotlarini tartiblash, matn yoki rasmdan ajratish va Excel faylga yozib borish mumkin.
 
 ## Imkoniyatlar
 
