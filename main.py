@@ -149,13 +149,53 @@ Qoidalar:
 - Ma'lumot yo'q bo'lsa bo'sh string qaytaring.
 - Telefon raqamni formatlamang, asl ko'rinishida qaytaring.
 - Taxmin qilmang. Ishonchsiz joylarni needs_review maydoniga yozing.
+- Ism yo'q bo'lsa "Mijoz", "Noma'lum", "Customer" kabi placeholder yozmang, full_name bo'sh string bo'lsin.
+- Bitta xabarda bitta ism/manzil va bir nechta telefon raqami bo'lsa, buni bitta mijoz deb oling: asosiy telefonni phone maydoniga, qolgan telefonlarni note maydoniga yozing.
+- Faqat aniq boshqa-boshqa mijozlar bo'lsa alohida obyekt qiling.
 - Javob faqat schema bo'yicha bo'lsin.
 """.strip()
+
+
+def apply_template_header(sheet: Any) -> None:
+    if TEMPLATE_PATH.exists():
+        template = load_workbook(TEMPLATE_PATH)
+        template_sheet = template.active
+        for col in range(1, 18):
+            source = template_sheet.cell(1, col)
+            target = sheet.cell(1, col)
+            target.value = source.value
+            if source.has_style:
+                target._style = copy(source._style)
+            target.number_format = source.number_format
+            target.alignment = copy(source.alignment)
+            letter = target.column_letter
+            sheet.column_dimensions[letter].width = template_sheet.column_dimensions[letter].width
+        return
+
+    for col, header in enumerate(HEADERS, start=1):
+        sheet.cell(1, col).value = header
+
+
+def ensure_workbook_schema() -> None:
+    workbook = load_workbook(EXCEL_PATH)
+    sheet = workbook.active
+    current_headers = [sheet.cell(1, col).value for col in range(1, 18)]
+
+    if current_headers == HEADERS:
+        return
+
+    first_row_has_data = any(value not in (None, "") for value in current_headers)
+    if first_row_has_data:
+        sheet.insert_rows(1)
+
+    apply_template_header(sheet)
+    workbook.save(EXCEL_PATH)
 
 
 def ensure_excel_file() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if EXCEL_PATH.exists():
+        ensure_workbook_schema()
         return
 
     if TEMPLATE_PATH.exists():
@@ -172,7 +212,7 @@ def ensure_excel_file() -> None:
     sheet = workbook.active
     sheet.title = "Шаблон"
     sheet.append(HEADERS)
-    widths = [8, 28, 18, 38, 40, 32]
+    widths = [18, 24, 19, 21, 23, 18, 13, 13, 20, 27, 25, 20, 22, 24, 22, 21, 23]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[chr(64 + index)].width = width
 
@@ -209,6 +249,13 @@ def clean_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def clean_name(value: Any) -> str:
+    name = clean_text(value)
+    if name.lower() in {"mijoz", "noma'lum", "nomalum", "unknown", "customer"}:
+        return ""
+    return name
 
 
 def parse_bool(value: str) -> str | None:
@@ -383,8 +430,8 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
         rows.append(
             [
                 "",
-                clean_text(customer.get("full_name")),
-                clean_text(customer.get("full_name")),
+                clean_name(customer.get("full_name")),
+                clean_name(customer.get("full_name")),
                 clean_text(customer.get("address")),
                 normalized_phone,
                 "",
