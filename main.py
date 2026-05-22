@@ -13,7 +13,14 @@ from typing import Any
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import BotCommand, BufferedInputFile, Message
+from aiogram.types import (
+    BotCommand,
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from dotenv import load_dotenv
 from openai import OpenAI
 from openpyxl import Workbook, load_workbook
@@ -85,8 +92,12 @@ SETUP_STEPS = [
         "Jo'natmalar uchun qaytarilmaydigan shifr prefixini kiriting. Masalan: ABC",
     ),
     (
+        "delivery_type",
+        "Yetkazib berish turini tanlang.",
+    ),
+    (
         "payment_by_receiver",
-        "Оплата получателем bo'ladimi? True yoki False deb yozing.",
+        "Оплата получателем bo'ladimi?",
     ),
     (
         "parcel_weight",
@@ -300,6 +311,17 @@ ALLOWED_RECIPIENT_LOCATIONS = [
 ]
 
 LOCATION_LIST_FOR_PROMPT = ", ".join(ALLOWED_RECIPIENT_LOCATIONS)
+
+BUTTON_SETUP_OPTIONS = {
+    "delivery_type": [
+        ("ДО ОФИСА", "ДО ОФИСА"),
+        ("НА ДОМ", "НА ДОМ"),
+    ],
+    "payment_by_receiver": [
+        ("True", "True"),
+        ("False", "False"),
+    ],
+}
 
 
 CUSTOMER_SCHEMA: dict[str, Any] = {
@@ -698,6 +720,12 @@ def validate_setup_value(chat_id: int, key: str, value: str) -> tuple[str | None
     if not value:
         return None, "Bu maydon bo'sh bo'lmasin. Iltimos, qayta kiriting."
 
+    if key in BUTTON_SETUP_OPTIONS:
+        allowed_values = {option_value for _label, option_value in BUTTON_SETUP_OPTIONS[key]}
+        if value not in allowed_values:
+            return None, "Iltimos, pastdagi tugmalardan birini tanlang."
+        return value, None
+
     if key == "sender_phone":
         normalized, review = normalize_phone(value)
         if review:
@@ -730,6 +758,35 @@ def validate_setup_value(chat_id: int, key: str, value: str) -> tuple[str | None
     return value, None
 
 
+def setup_step_keyboard(key: str) -> InlineKeyboardMarkup | None:
+    options = BUTTON_SETUP_OPTIONS.get(key)
+    if not options:
+        return None
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"setup:{key}:{value}",
+                )
+            ]
+            for label, value in options
+        ]
+    )
+
+
+async def ask_setup_step(message_or_query: Message | CallbackQuery, step_index: int) -> None:
+    key, question = SETUP_STEPS[step_index]
+    keyboard = setup_step_keyboard(key)
+
+    if isinstance(message_or_query, CallbackQuery):
+        if message_or_query.message:
+            await message_or_query.message.answer(question, reply_markup=keyboard)
+    else:
+        await message_or_query.answer(question, reply_markup=keyboard)
+
+
 def setup_summary(session: dict[str, str]) -> str:
     return (
         "Jo'natuvchi ma'lumotlari saqlandi:\n"
@@ -738,6 +795,7 @@ def setup_summary(session: dict[str, str]) -> str:
         f"Manzil: {session['sender_address']}\n"
         f"Shahar: {session['sender_city_ru']}\n"
         f"Shifr: {session['cipher_prefix']}1, {session['cipher_prefix']}2, ...\n"
+        f"Yetkazib berish turi: {session['delivery_type']}\n"
         f"Оплата получателем: {session['payment_by_receiver']}\n"
         f"Og'irlik: {session['parcel_weight']}\n"
         f"Количество мест: {session['places_count']}\n\n"
@@ -751,9 +809,34 @@ async def start_setup(message: Message, reset: bool = False) -> None:
         sender_sessions.pop(chat_id, None)
     setup_states[chat_id] = {"step": 0, "data": {}}
     await message.answer(
-        "Excel yaratishdan oldin jo'natuvchi ma'lumotlarini kiritamiz.\n\n"
-        f"{SETUP_STEPS[0][1]}"
+        "Excel yaratishdan oldin jo'natuvchi ma'lumotlarini kiritamiz."
     )
+    await ask_setup_step(message, 0)
+
+
+async def save_setup_value_and_advance(
+    message_or_query: Message | CallbackQuery,
+    chat_id: int,
+    key: str,
+    value: str,
+) -> None:
+    state = setup_states[chat_id]
+    state["data"][key] = value
+    step_index = state["step"] + 1
+
+    if step_index >= len(SETUP_STEPS):
+        sender_sessions[chat_id] = state["data"]
+        setup_states.pop(chat_id, None)
+        summary = setup_summary(sender_sessions[chat_id])
+        if isinstance(message_or_query, CallbackQuery):
+            if message_or_query.message:
+                await message_or_query.message.answer(summary)
+        else:
+            await message_or_query.answer(summary)
+        return
+
+    state["step"] = step_index
+    await ask_setup_step(message_or_query, step_index)
 
 
 async def handle_setup_message(message: Message) -> bool:
@@ -767,20 +850,45 @@ async def handle_setup_message(message: Message) -> bool:
     parsed_value, error = validate_setup_value(chat_id, key, message.text or "")
     if error:
         await message.answer(error)
+        if key in BUTTON_SETUP_OPTIONS:
+            await ask_setup_step(message, step_index)
         return True
 
-    state["data"][key] = parsed_value or ""
-    step_index += 1
-
-    if step_index >= len(SETUP_STEPS):
-        sender_sessions[chat_id] = state["data"]
-        setup_states.pop(chat_id, None)
-        await message.answer(setup_summary(sender_sessions[chat_id]))
-        return True
-
-    state["step"] = step_index
-    await message.answer(SETUP_STEPS[step_index][1])
+    await save_setup_value_and_advance(message, chat_id, key, parsed_value or "")
     return True
+
+
+async def setup_callback_handler(callback: CallbackQuery) -> None:
+    data = callback.data or ""
+    parts = data.split(":", 2)
+    if len(parts) != 3 or parts[0] != "setup":
+        await callback.answer()
+        return
+
+    chat_id = callback.message.chat.id if callback.message else callback.from_user.id
+    state = setup_states.get(chat_id)
+    if state is None:
+        await callback.answer("Sozlash jarayoni topilmadi. /setup ni bosing.", show_alert=True)
+        return
+
+    expected_key, _question = SETUP_STEPS[state["step"]]
+    callback_key, value = parts[1], parts[2]
+    if callback_key != expected_key:
+        await callback.answer("Bu tugma eski savol uchun. Hozirgi savolga javob bering.", show_alert=True)
+        return
+
+    parsed_value, error = validate_setup_value(chat_id, expected_key, value)
+    if error:
+        await callback.answer(error, show_alert=True)
+        return
+
+    await callback.answer(f"Tanlandi: {parsed_value}")
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    await save_setup_value_and_advance(callback, chat_id, expected_key, parsed_value or "")
 
 
 def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> list[list[str]]:
@@ -806,7 +914,7 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
                 sender["parcel_weight"],
                 clean_text(customer.get("note")),
                 sender["places_count"],
-                "",
+                sender["delivery_type"],
                 sender["sender_full_name"],
                 sender["sender_full_name"],
                 sender["sender_address"],
@@ -1135,6 +1243,7 @@ async def main() -> None:
     dispatcher = Dispatcher()
     await setup_bot_commands(bot)
 
+    dispatcher.callback_query.register(setup_callback_handler, F.data.startswith("setup:"))
     dispatcher.message.register(start_handler, Command("start"))
     dispatcher.message.register(setup_handler, Command("setup"))
     dispatcher.message.register(help_handler, Command("help"))
