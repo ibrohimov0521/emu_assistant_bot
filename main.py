@@ -10,7 +10,7 @@ from typing import Any
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import BotCommand, BufferedInputFile, Message
 from dotenv import load_dotenv
 from openai import OpenAI
 from openpyxl import Workbook, load_workbook
@@ -406,6 +406,17 @@ async def unsupported_handler(message: Message) -> None:
     await message.answer("Matn yoki rasm yuboring. Yordam uchun /help buyrug'ini bosing.")
 
 
+async def setup_bot_commands(bot: Bot) -> None:
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Botni ishga tushirish"),
+            BotCommand(command="help", description="Foydalanish bo'yicha yordam"),
+            BotCommand(command="excel", description="Excel faylni yuborish"),
+            BotCommand(command="clear", description="Ro'yxatni tozalash"),
+        ]
+    )
+
+
 async def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError(
@@ -420,6 +431,7 @@ async def main() -> None:
 
     bot = Bot(token=BOT_TOKEN)
     dispatcher = Dispatcher()
+    await setup_bot_commands(bot)
 
     dispatcher.message.register(start_handler, Command("start"))
     dispatcher.message.register(help_handler, Command("help"))
