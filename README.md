@@ -54,6 +54,8 @@ Bot Excelga yozishdan oldin quyidagilarni so'raydi:
 
 Shundan keyin mijozlar matn yoki rasm qilib yuboriladi. Bot oluvchilarni ajratib, `templates/yangi_shablon.xlsx` asosida `data/customers.xlsx` faylini yaratadi.
 
+`templates/branch_codes.xlsx` faylidagi `Внутренний код` qiymati P ustundagi `Город-получатель` bilan moslanadi va D ustundagi adres boshiga qo'shiladi. P ustun o'z nomi bilan qoladi.
+
 ## O'rnatish
 
 ```bash

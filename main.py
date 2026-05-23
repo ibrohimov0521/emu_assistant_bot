@@ -36,6 +36,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 TEMPLATE_DIR = BASE_DIR / "templates"
 TEMPLATE_PATH = TEMPLATE_DIR / "yangi_shablon.xlsx"
+BRANCH_CODES_PATH = TEMPLATE_DIR / "branch_codes.xlsx"
 EXCEL_PATH = DATA_DIR / "customers.xlsx"
 
 HEADERS = [
@@ -68,6 +69,7 @@ excel_lock = asyncio.Lock()
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 sender_sessions: dict[int, dict[str, str]] = {}
 setup_states: dict[int, dict[str, Any]] = {}
+branch_code_cache: dict[str, str] | None = None
 
 
 SETUP_STEPS = [
@@ -496,6 +498,46 @@ def clean_address(value: Any, recipient_location: str) -> str:
     if recipient_location:
         return f"{recipient_location} markazi"
     return ""
+
+
+def load_branch_codes() -> dict[str, str]:
+    global branch_code_cache
+    if branch_code_cache is not None:
+        return branch_code_cache
+
+    branch_code_cache = {}
+    if not BRANCH_CODES_PATH.exists():
+        logger.warning("Branch code file not found: %s", BRANCH_CODES_PATH)
+        return branch_code_cache
+
+    workbook = load_workbook(BRANCH_CODES_PATH, data_only=True)
+    sheet = workbook.active
+    for row_index in range(2, sheet.max_row + 1):
+        code = clean_text(sheet.cell(row_index, 1).value)
+        city = clean_text(sheet.cell(row_index, 2).value)
+        key = normalize_location_key(city)
+        if code and key and key not in branch_code_cache:
+            branch_code_cache[key] = code
+
+    return branch_code_cache
+
+
+def branch_code_for_location(recipient_location: str) -> str:
+    if not recipient_location:
+        return ""
+    return load_branch_codes().get(normalize_location_key(recipient_location), "")
+
+
+def format_recipient_address(value: Any, recipient_location: str) -> tuple[str, str]:
+    address = clean_address(value, recipient_location)
+    branch_code = branch_code_for_location(recipient_location)
+    if not branch_code:
+        if recipient_location:
+            return address, f"{recipient_location} uchun filial kodi topilmadi"
+        return address, ""
+    if not address:
+        return branch_code, ""
+    return f"{branch_code}, {address}", ""
 
 
 def normalize_location_key(value: str) -> str:
@@ -984,10 +1026,15 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
     for customer in customers:
         normalized_phone, phone_review = normalize_phone(clean_text(customer.get("phone")))
         recipient_location, location_review = resolve_allowed_recipient_location(customer)
+        recipient_address, branch_code_review = format_recipient_address(
+            customer.get("address"),
+            recipient_location,
+        )
         review_parts = [
             clean_text(customer.get("needs_review")),
             phone_review,
             location_review,
+            branch_code_review,
         ]
         review = "; ".join(part for part in review_parts if part)
 
@@ -996,7 +1043,7 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
                 "",
                 clean_name(customer.get("full_name")),
                 clean_name(customer.get("full_name")),
-                clean_address(customer.get("address"), recipient_location),
+                recipient_address,
                 normalized_phone,
                 "",
                 sender["parcel_weight"],
