@@ -535,9 +535,7 @@ def format_recipient_address(value: Any, recipient_location: str) -> tuple[str, 
         if recipient_location:
             return address, f"{recipient_location} uchun filial kodi topilmadi"
         return address, ""
-    if not address:
-        return branch_code, ""
-    return f"{branch_code}, {address}", ""
+    return branch_code, ""
 
 
 def normalize_location_key(value: str) -> str:
