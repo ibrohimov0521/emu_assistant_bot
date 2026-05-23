@@ -46,11 +46,12 @@ Bot Excelga yozishdan oldin quyidagilarni so'raydi:
 - jo'natuvchi shahri rus tilida
 - shifr prefixi, masalan `ABC`
 - yetkazib berish turi: `ДО ОФИСА` yoki `НА ДОМ`
+- упаковка turi, hozircha `Пакет L` (`794`)
 - `Оплата получателем`: `True` yoki `False`
 - hamma jo'natmalar uchun bir xil og'irlik
 - bir mijozga nechta jo'natma bo'lishi
 
-`ДО ОФИСА` / `НА ДОМ` va `True` / `False` qiymatlari Telegram tugmalari orqali tanlanadi.
+`ДО ОФИСА` / `НА ДОМ`, упаковка turi va `True` / `False` qiymatlari Telegram tugmalari orqali tanlanadi.
 
 Shundan keyin mijozlar matn yoki rasm qilib yuboriladi. Bot oluvchilarni ajratib, `templates/yangi_shablon.xlsx` asosida `data/customers.xlsx` faylini yaratadi.
 

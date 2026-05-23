@@ -57,7 +57,10 @@ HEADERS = [
     "Город-отправитель",
     "Город-получатель",
     "Оплата получателем",
+    "Код упаковке",
 ]
+
+EXCEL_COLUMN_COUNT = len(HEADERS)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,6 +99,10 @@ SETUP_STEPS = [
     (
         "delivery_type",
         "Yetkazib berish turini tanlang.",
+    ),
+    (
+        "package_code",
+        "Упаковка turini tanlang.",
     ),
     (
         "payment_by_receiver",
@@ -323,6 +330,9 @@ BUTTON_SETUP_OPTIONS = {
         ("True", "True"),
         ("False", "False"),
     ],
+    "package_code": [
+        ("Пакет L", "794"),
+    ],
 }
 
 
@@ -393,7 +403,7 @@ def apply_template_header(sheet: Any) -> None:
     if TEMPLATE_PATH.exists():
         template = load_workbook(TEMPLATE_PATH)
         template_sheet = template.active
-        for col in range(1, 18):
+        for col in range(1, EXCEL_COLUMN_COUNT + 1):
             source = template_sheet.cell(1, col)
             target = sheet.cell(1, col)
             target.value = source.value
@@ -412,9 +422,14 @@ def apply_template_header(sheet: Any) -> None:
 def ensure_workbook_schema() -> None:
     workbook = load_workbook(EXCEL_PATH)
     sheet = workbook.active
-    current_headers = [sheet.cell(1, col).value for col in range(1, 18)]
+    current_headers = [sheet.cell(1, col).value for col in range(1, EXCEL_COLUMN_COUNT + 1)]
 
     if current_headers == HEADERS:
+        return
+
+    if current_headers[: EXCEL_COLUMN_COUNT - 1] == HEADERS[:-1] and current_headers[-1] in (None, ""):
+        apply_template_header(sheet)
+        workbook.save(EXCEL_PATH)
         return
 
     first_row_has_data = any(value not in (None, "") for value in current_headers)
@@ -435,7 +450,7 @@ def ensure_excel_file() -> None:
         shutil.copyfile(TEMPLATE_PATH, EXCEL_PATH)
         workbook = load_workbook(EXCEL_PATH)
         sheet = workbook.active
-        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=17):
+        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=EXCEL_COLUMN_COUNT):
             for cell in row:
                 cell.value = None
         workbook.save(EXCEL_PATH)
@@ -445,7 +460,7 @@ def ensure_excel_file() -> None:
     sheet = workbook.active
     sheet.title = "Шаблон"
     sheet.append(HEADERS)
-    widths = [18, 24, 19, 21, 23, 18, 13, 13, 20, 27, 25, 20, 22, 24, 22, 21, 23]
+    widths = [18, 24, 19, 21, 23, 18, 13, 13, 20, 27, 25, 20, 22, 24, 22, 21, 23, 16]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[chr(64 + index)].width = width
 
@@ -792,7 +807,7 @@ def normalize_cipher_prefix(value: str) -> str:
 
 def find_last_data_row(sheet: Any) -> int:
     for row_index in range(sheet.max_row, 1, -1):
-        if any(sheet.cell(row_index, col).value not in (None, "") for col in range(1, 18)):
+        if any(sheet.cell(row_index, col).value not in (None, "") for col in range(1, EXCEL_COLUMN_COUNT + 1)):
             return row_index
     return 1
 
@@ -819,7 +834,7 @@ def next_cipher_index(sheet: Any, prefix: str) -> int:
 
 
 def copy_row_style(sheet: Any, source_row: int, target_row: int) -> None:
-    for col in range(1, 18):
+    for col in range(1, EXCEL_COLUMN_COUNT + 1):
         source = sheet.cell(source_row, col)
         target = sheet.cell(target_row, col)
         if source.has_style:
@@ -924,6 +939,7 @@ def setup_summary(session: dict[str, str]) -> str:
         f"Shahar: {session['sender_city_ru']}\n"
         f"Shifr: {session['cipher_prefix']}1, {session['cipher_prefix']}2, ...\n"
         f"Yetkazib berish turi: {session['delivery_type']}\n"
+        f"Код упаковке: {session['package_code']}\n"
         f"Оплата получателем: {session['payment_by_receiver']}\n"
         f"Og'irlik: {session['parcel_weight']}\n"
         f"Количество мест: {session['places_count']}\n\n"
@@ -1055,6 +1071,7 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
                 sender["sender_city_ru"],
                 recipient_location,
                 sender["payment_by_receiver"],
+                sender["package_code"],
                 review,
             ]
         )
