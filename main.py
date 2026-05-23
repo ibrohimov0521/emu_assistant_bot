@@ -380,6 +380,9 @@ Qoidalar:
 - Bitta xabarda bitta ism/manzil va bir nechta telefon raqami bo'lsa, buni bitta mijoz deb oling: asosiy telefonni phone maydoniga, qolgan telefonlarni note maydoniga yozing.
 - Faqat aniq boshqa-boshqa mijozlar bo'lsa alohida obyekt qiling.
 - recipient_region_ru hech qachon "Ферганская область, Учкуприкский район" kabi bo'lmasin; ro'yxatdagi "Учкуприк" kabi bitta qiymat bo'lsin.
+- Agar manzilda viloyat/tuman/shahar nomi bor bo'lsa, recipient_region_ru ni bo'sh qoldirmang; ro'yxatdan eng yaqin mos qiymatni tanlang.
+- Tuman yoki shahar nomi viloyatdan muhimroq: "Farg'ona viloyati Oltiariq tumani" uchun "Фергана" emas, "Алтыарык" yozing.
+- Lotin yozuvidagi O'zbekcha nomlarni ruscha ro'yxatga moslang: Qorako'l -> Каракуль, Qo'rg'ontepa -> Кургантепа, Bo'ka -> Бука, Tayloq -> Тайлак.
 - Javob faqat schema bo'yicha bo'lsin.
 """.strip().format(location_list=LOCATION_LIST_FOR_PROMPT)
 
@@ -577,6 +580,7 @@ LOCATION_ALIASES = {
     "oltariq": "Алтыарык",
     "oltiarik": "Алтыарык",
     "oltirik": "Алтыарык",
+    "oltariqtumani": "Алтыарык",
     "oltiriqtumani": "Алтыарык",
     "oltiariqtumani": "Алтыарык",
     "oltiariq tumani": "Алтыарык",
@@ -594,6 +598,80 @@ LOCATION_ALIASES = {
 LOCATION_ALIAS_BY_KEY = {
     normalize_location_key(alias): location for alias, location in LOCATION_ALIASES.items()
 }
+
+LOCATION_STOP_WORDS = {
+    "viloyati",
+    "viloyat",
+    "tumani",
+    "tuman",
+    "shahar",
+    "shahri",
+    "shaharchasi",
+    "kocha",
+    "kochasi",
+    "mahalla",
+    "mahallasi",
+    "mfy",
+    "uy",
+    "dom",
+    "kv",
+    "n",
+}
+
+
+def location_tokens(value: str) -> list[str]:
+    normalized = value.lower().replace("ё", "е")
+    replacements = {
+        "ў": "u",
+        "ғ": "g",
+        "ģ": "g",
+        "ğ": "g",
+        "қ": "q",
+        "ҳ": "h",
+        "ʼ": "",
+        "‘": "",
+        "’": "",
+        "'": "",
+        "`": "",
+    }
+    for source, target in replacements.items():
+        normalized = normalized.replace(source, target)
+
+    tokens = re.findall(r"[a-zа-я0-9]+", normalized)
+    return [token for token in tokens if token not in LOCATION_STOP_WORDS and len(token) > 1]
+
+
+def token_window_keys(value: str) -> list[str]:
+    tokens = location_tokens(value)
+    keys: list[str] = []
+    for size in range(min(3, len(tokens)), 0, -1):
+        for start in range(0, len(tokens) - size + 1):
+            keys.append(normalize_location_key(" ".join(tokens[start : start + size])))
+    return keys
+
+
+def fuzzy_location_from_key(key: str) -> str:
+    if not key:
+        return ""
+
+    searchable = {**LOCATION_BY_KEY, **LOCATION_ALIAS_BY_KEY}
+    for candidate_key, location in searchable.items():
+        if candidate_key and (candidate_key in key or key in candidate_key):
+            return location
+
+    matches = get_close_matches(key, list(searchable.keys()), n=1, cutoff=0.76)
+    if matches:
+        return searchable[matches[0]]
+
+    return ""
+
+
+def fuzzy_location_from_text(value: str) -> str:
+    for key in token_window_keys(value):
+        location = fuzzy_location_from_key(key)
+        if location:
+            return location
+    return ""
 
 
 def resolve_allowed_recipient_location(customer: dict[str, Any]) -> tuple[str, str]:
@@ -624,6 +702,11 @@ def resolve_allowed_recipient_location(customer: dict[str, Any]) -> tuple[str, s
         if location_key and location_key in address_key:
             return location, ""
 
+    for value in [candidate for candidate in address_values if candidate]:
+        location = fuzzy_location_from_text(value)
+        if location:
+            return location, ""
+
     for value in [candidate for candidate in fallback_values if candidate]:
         key = normalize_location_key(value)
         if key in LOCATION_BY_KEY:
@@ -639,9 +722,14 @@ def resolve_allowed_recipient_location(customer: dict[str, Any]) -> tuple[str, s
         if location_key and location_key in fallback_key:
             return location, ""
 
-    matches = get_close_matches(address_key or combined_key, list(LOCATION_BY_KEY.keys()), n=1, cutoff=0.84)
-    if matches:
-        return LOCATION_BY_KEY[matches[0]], ""
+    for value in [candidate for candidate in fallback_values if candidate]:
+        location = fuzzy_location_from_text(value)
+        if location:
+            return location, ""
+
+    location = fuzzy_location_from_key(address_key or combined_key)
+    if location:
+        return location, ""
 
     return "", "P ustun uchun справочникdagi shahar/tuman topilmadi"
 
