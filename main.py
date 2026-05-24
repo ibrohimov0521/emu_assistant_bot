@@ -268,6 +268,7 @@ ALLOWED_RECIPIENT_LOCATIONS = [
     "Лаиш",
     "Нурабад",
     "Пайарык",
+    "Пахтачи",
     "Тайлак",
     "Ургут",
     "Термез",
@@ -410,22 +411,23 @@ Matn yoki rasmda bir nechta mijoz bo'lishi mumkin. Har bir mijozni alohida obyek
 Ajratiladigan maydonlar:
 - number: asl tartib raqami bor bo'lsa, aks holda bo'sh string
 - full_name: ism familiya bor bo'lsa
-- phone: telefon raqami asl matndagi ko'rinishida, hech narsa to'qimang
+- phone: barcha telefon raqamlari asl matndagi ko'rinishida; bir nechta bo'lsa hammasini shu maydonga yozing
 - address: manzil
 - recipient_region_ru: oluvchining manzilidan P ustun uchun mos shahar/tuman nomini rus tilida tanlang. Faqat quyidagi ro'yxatdan bittasini yozing, boshqa format yozmang:
 {location_list}
-- note: boshqa foydali izohlar, noaniq yoki yo'qolmasligi kerak bo'lgan bo'laklar
+- note: boshqa foydali izohlar, noaniq yoki yo'qolmasligi kerak bo'lgan bo'laklar; telefon raqamlarini bu maydonga yozmang
 - needs_review: noaniq o'qilgan, telefon raqami shubhali, rasm sifati past, yoki maydonlar aralash bo'lsa qisqa izoh
 
 Qoidalar:
 - Ma'lumot yo'q bo'lsa bo'sh string qaytaring.
-- Telefon raqamni formatlamang, asl ko'rinishida qaytaring.
+- Telefon raqamlarni formatlamang, asl ko'rinishida qaytaring.
 - Taxmin qilmang. Ishonchsiz joylarni needs_review maydoniga yozing.
 - Ism yo'q bo'lsa "Mijoz", "Noma'lum", "Customer" kabi placeholder yozmang, full_name bo'sh string bo'lsin.
-- Bitta xabarda bitta ism/manzil va bir nechta telefon raqami bo'lsa, buni bitta mijoz deb oling: asosiy telefonni phone maydoniga, qolgan telefonlarni note maydoniga yozing.
+- Bitta xabarda bitta ism/manzil va bir nechta telefon raqami bo'lsa, buni bitta mijoz deb oling: hamma telefon raqamlarni phone maydoniga yozing, note maydoniga telefon yozmang.
 - Faqat aniq boshqa-boshqa mijozlar bo'lsa alohida obyekt qiling.
 - recipient_region_ru hech qachon "Ферганская область, Учкуприкский район" kabi bo'lmasin; ro'yxatdagi "Учкуприк" kabi bitta qiymat bo'lsin.
 - Agar manzilda viloyat/tuman/shahar nomi bor bo'lsa, recipient_region_ru ni bo'sh qoldirmang; ro'yxatdan eng yaqin mos qiymatni tanlang.
+- "Samarqand viloyati Paxtachi tumani" bo'lsa recipient_region_ru uchun "Пахтачи" yozing.
 - Tuman yoki shahar nomi viloyatdan muhimroq: "Farg'ona viloyati Oltiariq tumani" uchun "Фергана" emas, "Алтыарык" yozing.
 - Lotin yozuvidagi O'zbekcha nomlarni ruscha ro'yxatga moslang: Qorako'l -> Каракуль, Qo'rg'ontepa -> Кургантепа, Bo'ka -> Бука, Tayloq -> Тайлак.
 - Javob faqat schema bo'yicha bo'lsin.
@@ -534,6 +536,50 @@ def normalize_phone(raw_phone: str) -> tuple[str, str]:
         return f"998{digits[1:]}", review
 
     return raw_phone, f"Telefon noaniq: {raw_phone}"
+
+
+PHONE_CANDIDATE_RE = re.compile(r"\+?\d[\d\s\-()]{7,}\d")
+
+
+def extract_phone_candidates(*values: str) -> list[str]:
+    candidates: list[str] = []
+    for value in values:
+        for match in PHONE_CANDIDATE_RE.findall(value or ""):
+            candidate = match.strip(" -()")
+            if candidate:
+                candidates.append(candidate)
+    return candidates
+
+
+def normalize_phone_list(*values: str) -> tuple[str, str]:
+    normalized_numbers: list[str] = []
+    reviews: list[str] = []
+
+    for candidate in extract_phone_candidates(*values):
+        normalized, review = normalize_phone(candidate)
+        if review:
+            reviews.append(review)
+            continue
+        if normalized not in normalized_numbers:
+            normalized_numbers.append(normalized)
+
+    if normalized_numbers:
+        return "; ".join(normalized_numbers), "; ".join(reviews)
+
+    raw_phone = clean_text(values[0]) if values else ""
+    if not raw_phone:
+        return "", ""
+    return normalize_phone(raw_phone)
+
+
+def strip_phone_candidates(value: str) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    text = PHONE_CANDIDATE_RE.sub("", text)
+    text = re.sub(r"\b(qolgan|ikkinchi|2-?chi|telefon|tel|raqamlar|raqami)\b\s*:?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*[,;|/]\s*", " ", text)
+    return re.sub(r"\s{2,}", " ", text).strip(" -,:;|/")
 
 
 def clean_text(value: Any) -> str:
@@ -661,6 +707,12 @@ LOCATION_ALIASES = {
     "payaryk": "Пайарык",
     "payariqtumani": "Пайарык",
     "payariktumani": "Пайарык",
+    "paxtachi": "Пахтачи",
+    "paxtachitumani": "Пахтачи",
+    "paxtachi tumani": "Пахтачи",
+    "pakhtachi": "Пахтачи",
+    "pakhtachitumani": "Пахтачи",
+    "pakhtachi tumani": "Пахтачи",
     "samarqand": "Самарканд",
     "samarkand": "Самарканд",
     "rudakiy": "Самарканд",
@@ -774,7 +826,7 @@ REGION_CENTER_BY_LOCATION = {
         "Нукус",
     ),
     **dict.fromkeys(
-        ["Самарканд", "Акташ", "Булунгур", "Гульабад", "Джамбай", "Джума", "Зиадин", "Иштыхан", "Каттакурган", "Кушрабад", "Лаиш", "Нурабад", "Пайарык", "Тайлак", "Ургут"],
+        ["Самарканд", "Акташ", "Булунгур", "Гульабад", "Джамбай", "Джума", "Зиадин", "Иштыхан", "Каттакурган", "Кушрабад", "Лаиш", "Нурабад", "Пайарык", "Пахтачи", "Тайлак", "Ургут"],
         "Самарканд",
     ),
     **dict.fromkeys(
@@ -1287,7 +1339,11 @@ async def setup_callback_handler(callback: CallbackQuery) -> None:
 def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> list[list[str]]:
     rows = []
     for customer in customers:
-        normalized_phone, phone_review = normalize_phone(clean_text(customer.get("phone")))
+        note = strip_phone_candidates(customer.get("note"))
+        normalized_phone, phone_review = normalize_phone_list(
+            clean_text(customer.get("phone")),
+            clean_text(customer.get("note")),
+        )
         recipient_location, location_review = resolve_allowed_recipient_location(customer)
         recipient_address, branch_code_review = format_recipient_address(
             customer.get("address"),
@@ -1311,7 +1367,7 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
                 normalized_phone,
                 "",
                 sender["parcel_weight"],
-                clean_text(customer.get("note")),
+                note,
                 sender["places_count"],
                 sender["delivery_type"],
                 sender["sender_full_name"],
