@@ -952,6 +952,8 @@ def next_cipher_index(sheet: Any, prefix: str) -> int:
 
 
 def copy_row_style(sheet: Any, source_row: int, target_row: int) -> None:
+    if source_row > sheet.max_row:
+        source_row = 1
     for col in range(1, EXCEL_COLUMN_COUNT + 1):
         source = sheet.cell(source_row, col)
         target = sheet.cell(target_row, col)
