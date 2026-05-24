@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+from dataclasses import dataclass, field
 from difflib import get_close_matches
 from copy import copy
 from pathlib import Path
@@ -77,8 +78,27 @@ setup_states: dict[int, dict[str, Any]] = {}
 branch_code_cache: dict[str, str] | None = None
 reply_locks: dict[int, asyncio.Lock] = {}
 last_success_notice_at: dict[int, float] = {}
+batch_states: dict[int, "BatchState"] = {}
 
 SUCCESS_NOTICE_INTERVAL_SECONDS = 12
+BATCH_IDLE_SECONDS = 3
+
+
+@dataclass
+class BatchItem:
+    kind: str
+    message: Message
+    text: str = ""
+    file_id: str = ""
+    mime_type: str = ""
+    bot: Bot | None = None
+
+
+@dataclass
+class BatchState:
+    items: list[BatchItem] = field(default_factory=list)
+    task: asyncio.Task | None = None
+    last_added_at: float = 0
 
 
 SETUP_STEPS = [
@@ -949,6 +969,19 @@ async def safe_answer_document(message: Message, document: BufferedInputFile, **
                 await asyncio.sleep(error.retry_after + 1)
 
 
+async def safe_edit_text(message: Message, text: str, **kwargs: Any) -> None:
+    async with chat_reply_lock(message.chat.id):
+        while True:
+            try:
+                await message.edit_text(text, **kwargs)
+                return
+            except TelegramRetryAfter as error:
+                await asyncio.sleep(error.retry_after + 1)
+            except Exception as error:
+                logger.warning("Progress message edit failed: %s", error)
+                return
+
+
 async def maybe_send_success_notice(message: Message, count: int) -> None:
     now = asyncio.get_running_loop().time()
     last_sent = last_success_notice_at.get(message.chat.id, 0)
@@ -1384,6 +1417,127 @@ async def handle_customers(message: Message, customers: list[dict[str, Any]]) ->
     await maybe_send_success_notice(message, count)
 
 
+async def enqueue_batch_item(item: BatchItem) -> None:
+    chat_id = item.message.chat.id
+    state = batch_states.get(chat_id)
+    if state is None:
+        state = BatchState()
+        batch_states[chat_id] = state
+
+    state.items.append(item)
+    state.last_added_at = asyncio.get_running_loop().time()
+
+    if state.task is None or state.task.done():
+        state.task = asyncio.create_task(process_batch(chat_id))
+
+
+async def wait_for_batch_idle(chat_id: int) -> BatchState | None:
+    while True:
+        state = batch_states.get(chat_id)
+        if state is None:
+            return None
+
+        elapsed = asyncio.get_running_loop().time() - state.last_added_at
+        if elapsed >= BATCH_IDLE_SECONDS:
+            return state
+
+        await asyncio.sleep(max(0.2, BATCH_IDLE_SECONDS - elapsed))
+
+
+async def extract_customers_from_batch_item(item: BatchItem) -> list[dict[str, Any]]:
+    if item.kind == "text":
+        return await asyncio.to_thread(call_openai_with_text, item.text)
+
+    if item.bot is None:
+        raise RuntimeError("Bot instance topilmadi.")
+
+    file = await item.bot.get_file(item.file_id)
+    buffer = io.BytesIO()
+    await item.bot.download_file(file.file_path, destination=buffer)
+    image_bytes = buffer.getvalue()
+    return await asyncio.to_thread(
+        call_openai_with_image,
+        image_bytes,
+        item.mime_type or "image/jpeg",
+    )
+
+
+def batch_progress_text(total: int, processed: int, added: int, errors: list[str]) -> str:
+    return (
+        f"{total} ta ma'lumot qabul qilindi\n"
+        f"{processed}/{total} tahlil qilindi\n"
+        f"Excelga qo'shilgan mijozlar: {added}\n"
+        f"Xatoliklar: {len(errors)}"
+    )
+
+
+def batch_final_text(total: int, added: int, errors: list[str]) -> str:
+    lines = [
+        "Tahlil tugadi.",
+        f"Qabul qilingan xabarlar: {total}",
+        f"Excelga qo'shilgan mijozlar: {added}",
+    ]
+    if errors:
+        lines.append(f"Xatoliklar: {len(errors)}")
+        lines.extend(errors[:10])
+        if len(errors) > 10:
+            lines.append(f"... yana {len(errors) - 10} ta xatolik bor")
+    else:
+        lines.append("Xatoliklar: yo'q")
+    lines.append("Excel faylni olish uchun /excel yuboring.")
+    return "\n".join(lines)
+
+
+async def process_batch(chat_id: int) -> None:
+    state = await wait_for_batch_idle(chat_id)
+    if state is None or not state.items:
+        batch_states.pop(chat_id, None)
+        return
+
+    items = list(state.items)
+    state.items.clear()
+
+    first_message = items[0].message
+    progress_message = await safe_answer(
+        first_message,
+        batch_progress_text(len(items), 0, 0, []),
+    )
+
+    sender = sender_sessions.get(chat_id)
+    errors: list[str] = []
+    added_total = 0
+
+    for index, item in enumerate(items, start=1):
+        try:
+            if sender is None:
+                raise RuntimeError("Jo'natuvchi ma'lumotlari sozlanmagan. /setup ni bosing.")
+
+            customers = await extract_customers_from_batch_item(item)
+            if not customers:
+                raise RuntimeError("mijoz ma'lumotlari topilmadi")
+
+            added_total += await append_customers(customers, sender)
+        except Exception as error:
+            logger.exception("Batch item failed")
+            errors.append(f"{index}-xabar: {error}")
+
+        await safe_edit_text(
+            progress_message,
+            batch_progress_text(len(items), index, added_total, errors),
+        )
+
+    await safe_edit_text(
+        progress_message,
+        batch_final_text(len(items), added_total, errors),
+    )
+
+    state = batch_states.get(chat_id)
+    if state and state.items:
+        state.task = asyncio.create_task(process_batch(chat_id))
+    else:
+        batch_states.pop(chat_id, None)
+
+
 async def start_handler(message: Message) -> None:
     await safe_answer(
         message,
@@ -1465,12 +1619,7 @@ async def text_handler(message: Message) -> None:
         await start_setup(message)
         return
 
-    try:
-        customers = await asyncio.to_thread(call_openai_with_text, text)
-        await handle_customers(message, customers)
-    except Exception as error:
-        logger.exception("Text parsing failed")
-        await safe_answer(message, f"Xatolik yuz berdi: {error}")
+    await enqueue_batch_item(BatchItem(kind="text", message=message, text=text))
 
 
 async def photo_handler(message: Message, bot: Bot) -> None:
@@ -1482,22 +1631,16 @@ async def photo_handler(message: Message, bot: Bot) -> None:
         await start_setup(message)
         return
 
-    try:
-        photo = message.photo[-1]
-        file = await bot.get_file(photo.file_id)
-        buffer = io.BytesIO()
-        await bot.download_file(file.file_path, destination=buffer)
-        image_bytes = buffer.getvalue()
-
-        customers = await asyncio.to_thread(
-            call_openai_with_image,
-            image_bytes,
-            "image/jpeg",
+    photo = message.photo[-1]
+    await enqueue_batch_item(
+        BatchItem(
+            kind="image",
+            message=message,
+            file_id=photo.file_id,
+            mime_type="image/jpeg",
+            bot=bot,
         )
-        await handle_customers(message, customers)
-    except Exception as error:
-        logger.exception("Image parsing failed")
-        await safe_answer(message, f"Xatolik yuz berdi: {error}")
+    )
 
 
 async def document_image_handler(message: Message, bot: Bot) -> None:
@@ -1514,21 +1657,15 @@ async def document_image_handler(message: Message, bot: Bot) -> None:
         await safe_answer(message, "Iltimos, rasm yoki mijoz ma'lumotlari yozilgan matn yuboring.")
         return
 
-    try:
-        file = await bot.get_file(document.file_id)
-        buffer = io.BytesIO()
-        await bot.download_file(file.file_path, destination=buffer)
-        image_bytes = buffer.getvalue()
-
-        customers = await asyncio.to_thread(
-            call_openai_with_image,
-            image_bytes,
-            document.mime_type or "image/jpeg",
+    await enqueue_batch_item(
+        BatchItem(
+            kind="image",
+            message=message,
+            file_id=document.file_id,
+            mime_type=document.mime_type or "image/jpeg",
+            bot=bot,
         )
-        await handle_customers(message, customers)
-    except Exception as error:
-        logger.exception("Document image parsing failed")
-        await safe_answer(message, f"Xatolik yuz berdi: {error}")
+    )
 
 
 async def unsupported_handler(message: Message) -> None:
