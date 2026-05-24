@@ -57,6 +57,7 @@ HEADERS = [
     "Город-отправитель",
     "Город-получатель",
     "Оплата получателем",
+    "Тип вложение",
     "Код упаковке",
 ]
 
@@ -332,6 +333,11 @@ BUTTON_SETUP_OPTIONS = {
     ],
     "package_code": [
         ("Пакет L", "794"),
+        ("Пакет M", "498"),
+        ("O'tkazib yuborish", ""),
+    ],
+    "cipher_prefix": [
+        ("O'tkazib yuborish", ""),
     ],
 }
 
@@ -427,6 +433,16 @@ def ensure_workbook_schema() -> None:
     if current_headers == HEADERS:
         return
 
+    if (
+        current_headers[:17] == HEADERS[:17]
+        and current_headers[17] == "Код упаковке"
+        and (len(current_headers) < 19 or current_headers[18] in (None, ""))
+    ):
+        sheet.insert_cols(18)
+        apply_template_header(sheet)
+        workbook.save(EXCEL_PATH)
+        return
+
     if current_headers[: EXCEL_COLUMN_COUNT - 1] == HEADERS[:-1] and current_headers[-1] in (None, ""):
         apply_template_header(sheet)
         workbook.save(EXCEL_PATH)
@@ -460,7 +476,7 @@ def ensure_excel_file() -> None:
     sheet = workbook.active
     sheet.title = "Шаблон"
     sheet.append(HEADERS)
-    widths = [18, 24, 19, 21, 23, 18, 13, 13, 20, 27, 25, 20, 22, 24, 22, 21, 23, 16]
+    widths = [18, 24, 19, 21, 23, 18, 13, 13, 20, 27, 25, 20, 22, 24, 22, 21, 23, 18, 16]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[chr(64 + index)].width = width
 
@@ -543,14 +559,26 @@ def branch_code_for_location(recipient_location: str) -> str:
     return load_branch_codes().get(normalize_location_key(recipient_location), "")
 
 
-def format_recipient_address(value: Any, recipient_location: str) -> tuple[str, str]:
-    address = clean_address(value, recipient_location)
-    branch_code = branch_code_for_location(recipient_location)
-    if not branch_code:
+def region_center_for_location(recipient_location: str) -> str:
+    return REGION_CENTER_BY_LOCATION.get(recipient_location, recipient_location)
+
+
+def format_recipient_address(value: Any, recipient_location: str, delivery_type: str) -> tuple[str, str]:
+    if delivery_type == "ДО ОФИСА":
+        region_center = region_center_for_location(recipient_location)
+        branch_code = branch_code_for_location(region_center)
+        if branch_code:
+            return branch_code, ""
         if recipient_location:
-            return address, f"{recipient_location} uchun filial kodi topilmadi"
+            return "", f"{region_center} uchun filial kodi topilmadi"
+        return "", ""
+
+    address = clean_text(value)
+    if address:
         return address, ""
-    return branch_code, ""
+    if recipient_location:
+        return f"{recipient_location} markazi", ""
+    return "", ""
 
 
 def normalize_location_key(value: str) -> str:
@@ -652,6 +680,96 @@ LOCATION_ALIASES = {
 
 LOCATION_ALIAS_BY_KEY = {
     normalize_location_key(alias): location for alias, location in LOCATION_ALIASES.items()
+}
+
+REGION_CENTER_BY_LOCATION = {
+    **dict.fromkeys(
+        [
+            "Ташкент",
+            "Алмазар",
+            "Бектемир",
+            "Мирабад",
+            "Мирзо-Улугбек",
+            "Сергели",
+            "Учтепа",
+            "Чиланзар",
+            "Шайхантахур",
+            "Юнусабад",
+            "Яккасарай",
+            "Янгихаёт",
+            "Яшнабад",
+        ],
+        "Ташкент",
+    ),
+    **dict.fromkeys(
+        [
+            "Андижан",
+            "Алтинкул",
+            "Асака",
+            "Балыкчи",
+            "Боз",
+            "Булокбоши",
+            "Джалакудук",
+            "Избаскан",
+            "Куйган - яр",
+            "Кургантепа",
+            "Мархамат",
+            "Пахтаабад",
+            "Улугнор",
+            "Ханабад",
+            "Ходжаабад",
+            "Шахрихан",
+        ],
+        "Андижан",
+    ),
+    **dict.fromkeys(
+        ["Бухара", "Алат", "Вабкент", "Галлаасия", "Гиждуван", "Джандар", "Каган", "Каракуль", "Караулбазар", "Пешку", "Ромитан", "Шафиркан"],
+        "Бухара",
+    ),
+    **dict.fromkeys(
+        ["Джизак", "Арнасай", "Балангачкыр", "Бахмал", "Гагарин", "Галляарал", "Дустлик", "Заамин", "Зарбдар", "Зафарабад", "Пахтакор", "Шараф-Рашидов", "Янгикишлак"],
+        "Джизак",
+    ),
+    **dict.fromkeys(
+        ["Карши", "Бешкент", "Гузар", "Дехканабадский район", "Камаши", "Касан", "Касбий", "Китоб", "Кокдала", "Миришкор", "Мубарек", "Нишан", "Чиракчи", "Шахрисабз", "Яккабаг"],
+        "Карши",
+    ),
+    **dict.fromkeys(
+        ["Навои", "Бешрабат", "Зарафшан", "Канимех", "Кармана", "Кызылтепа", "Нурата", "Тамдыбулак", "Учкудук", "Хатырчи"],
+        "Навои",
+    ),
+    **dict.fromkeys(
+        ["Наманган", "Джумашуй", "Касансай", "Пап", "Ташбулак", "Туракурган", "Уйчи", "Учкурган", "Хаккулабад", "Чартак", "Чуст", "Янгикурган"],
+        "Наманган",
+    ),
+    **dict.fromkeys(
+        ["Нукус", "Акмангит", "Амударья", "Беруни", "Казакеткен", "Канлыкуль", "Караузяк", "Кегейли", "Кунград", "Муйнак", "Тахиаташ", "Тахтакупыр", "Турткуль", "Ходжейли", "Чимбай", "Шуманай", "Элликкала"],
+        "Нукус",
+    ),
+    **dict.fromkeys(
+        ["Самарканд", "Акташ", "Булунгур", "Гульабад", "Джамбай", "Джума", "Зиадин", "Иштыхан", "Каттакурган", "Кушрабад", "Лаиш", "Нурабад", "Пайарык", "Тайлак", "Ургут"],
+        "Самарканд",
+    ),
+    **dict.fromkeys(
+        ["Термез", "Ангор", "Байсун", "Бандихан", "Денау", "Джаркурган", "Карлук", "Кизирик", "Кумкурган", "Сариасия", "Узун", "Учкизил", "Халкабад", "Шерабад", "Шурчи"],
+        "Термез",
+    ),
+    **dict.fromkeys(
+        ["Гулистан", "Акалтын", "Бахт", "Дехканабад", "Навруз", "Сайхун", "Сардоба", "Сырдарья", "Хаваст", "Ширин", "Янгиер"],
+        "Гулистан",
+    ),
+    **dict.fromkeys(
+        ["Нурафшон", "Аккурган", "Алмалык", "Ангрен", "Ахангаран", "Бекабад", "Бука", "Верхне-Чирчикский", "Газалкент", "Дустабад", "Зангиата", "Келес", "Кибрай", "Паркент", "Пскент", "Чиназ", "Чирчик", "Янгийоль"],
+        "Нурафшон",
+    ),
+    **dict.fromkeys(
+        ["Фергана", "Алтыарык", "Багдад", "Бешарык", "Бувайда", "Водил", "Дангара", "Коканд", "Кува", "Кувасай", "Куштепа", "Маргилан", "Навбахор", "Риштан", "Сох", "Ташлак", "Учкуприк", "Язъяван", "Яйпан"],
+        "Фергана",
+    ),
+    **dict.fromkeys(
+        ["Ургенч", "Багат", "Гурлен", "Караул", "Кошкупыр", "Тупраккала", "Хазарасп", "Ханка", "Хива", "Шават", "Янгиарык", "Янгибазар"],
+        "Ургенч",
+    ),
 }
 
 LOCATION_STOP_WORDS = {
@@ -860,10 +978,12 @@ def is_cipher_prefix_available(prefix: str) -> bool:
 
 def validate_setup_value(chat_id: int, key: str, value: str) -> tuple[str | None, str | None]:
     value = clean_text(value)
+    if not value and key in {"cipher_prefix", "package_code"}:
+        return "", None
     if not value:
         return None, "Bu maydon bo'sh bo'lmasin. Iltimos, qayta kiriting."
 
-    if key in BUTTON_SETUP_OPTIONS:
+    if key in BUTTON_SETUP_OPTIONS and not (key == "cipher_prefix" and value):
         allowed_values = {option_value for _label, option_value in BUTTON_SETUP_OPTIONS[key]}
         if value not in allowed_values:
             return None, "Iltimos, pastdagi tugmalardan birini tanlang."
@@ -876,6 +996,8 @@ def validate_setup_value(chat_id: int, key: str, value: str) -> tuple[str | None
         return normalized, None
 
     if key == "cipher_prefix":
+        if not value:
+            return "", None
         prefix = normalize_cipher_prefix(value)
         if not prefix:
             return None, "Shifr faqat harf/raqamlardan iborat bo'lsin. Masalan: ABC"
@@ -923,6 +1045,9 @@ async def ask_setup_step(message_or_query: Message | CallbackQuery, step_index: 
     key, question = SETUP_STEPS[step_index]
     keyboard = setup_step_keyboard(key)
 
+    if key == "cipher_prefix":
+        question = f"{question}\n\nShifr kerak bo'lmasa, pastdagi tugmani bosing."
+
     if isinstance(message_or_query, CallbackQuery):
         if message_or_query.message:
             await message_or_query.message.answer(question, reply_markup=keyboard)
@@ -937,9 +1062,9 @@ def setup_summary(session: dict[str, str]) -> str:
         f"Telefon: {session['sender_phone']}\n"
         f"Manzil: {session['sender_address']}\n"
         f"Shahar: {session['sender_city_ru']}\n"
-        f"Shifr: {session['cipher_prefix']}1, {session['cipher_prefix']}2, ...\n"
+        f"Shifr: {session['cipher_prefix'] + '1, ' + session['cipher_prefix'] + '2, ...' if session['cipher_prefix'] else 'yoq'}\n"
         f"Yetkazib berish turi: {session['delivery_type']}\n"
-        f"Код упаковке: {session['package_code']}\n"
+        f"Код упаковке: {session['package_code'] if session['package_code'] else 'yoq'}\n"
         f"Оплата получателем: {session['payment_by_receiver']}\n"
         f"Og'irlik: {session['parcel_weight']}\n"
         f"Количество мест: {session['places_count']}\n\n"
@@ -1043,6 +1168,7 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
         recipient_address, branch_code_review = format_recipient_address(
             customer.get("address"),
             recipient_location,
+            sender["delivery_type"],
         )
         review_parts = [
             clean_text(customer.get("needs_review")),
@@ -1071,6 +1197,7 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
                 sender["sender_city_ru"],
                 recipient_location,
                 sender["payment_by_receiver"],
+                "Упаковка" if sender.get("package_code") else "",
                 sender["package_code"],
                 review,
             ]
@@ -1090,11 +1217,11 @@ async def append_customers(customers: list[dict[str, Any]], sender: dict[str, st
 
         next_row = find_last_data_row(sheet) + 1
         next_number = next_row - 1
-        next_code_index = next_cipher_index(sheet, sender["cipher_prefix"])
+        next_code_index = next_cipher_index(sheet, sender["cipher_prefix"]) if sender["cipher_prefix"] else 1
         for row in rows:
             copy_row_style(sheet, 2, next_row)
             row[0] = next_number
-            row[5] = f"{sender['cipher_prefix']}{next_code_index}"
+            row[5] = f"{sender['cipher_prefix']}{next_code_index}" if sender["cipher_prefix"] else ""
             review = row.pop()
             if review:
                 row[7] = "; ".join(part for part in [row[7], review] if part)
@@ -1102,7 +1229,8 @@ async def append_customers(customers: list[dict[str, Any]], sender: dict[str, st
                 sheet.cell(next_row, column_index).value = value
             next_row += 1
             next_number += 1
-            next_code_index += 1
+            if sender["cipher_prefix"]:
+                next_code_index += 1
 
         workbook.save(EXCEL_PATH)
 
@@ -1221,6 +1349,7 @@ async def start_handler(message: Message) -> None:
         "- qo'lda yozilgan ma'lumot rasmi\n\n"
         "Jo'natuvchi ma'lumotlarini qayta sozlash: /setup\n"
         "Excel faylni olish: /excel\n"
+        "Shablon faylni olish: /shablon\n"
         "Ro'yxatni tozalash: /clear\n"
         "Yordam: /help"
     )
@@ -1239,6 +1368,7 @@ async def help_handler(message: Message) -> None:
         "Komandalar:\n"
         "/setup - jo'natuvchi ma'lumotlarini qayta kiritish\n"
         "/excel - Excel faylni yuboradi\n"
+        "/shablon - Excel shablonni yuboradi\n"
         "/clear - ro'yxatni tozalaydi\n"
         "/help - yordam"
     )
@@ -1253,6 +1383,17 @@ async def excel_handler(message: Message) -> None:
     await message.answer_document(
         BufferedInputFile(file_bytes, filename="customers.xlsx"),
         caption="Yangilangan mijozlar ro'yxati.",
+    )
+
+
+async def template_handler(message: Message) -> None:
+    if not TEMPLATE_PATH.exists():
+        await message.answer("Shablon fayl topilmadi.")
+        return
+
+    await message.answer_document(
+        BufferedInputFile(TEMPLATE_PATH.read_bytes(), filename="yangi_shablon.xlsx"),
+        caption="Excel shablon fayli.",
     )
 
 
@@ -1372,6 +1513,7 @@ async def setup_bot_commands(bot: Bot) -> None:
             BotCommand(command="setup", description="Jo'natuvchi ma'lumotlarini sozlash"),
             BotCommand(command="help", description="Foydalanish bo'yicha yordam"),
             BotCommand(command="excel", description="Excel faylni yuborish"),
+            BotCommand(command="shablon", description="Excel shablonni yuborish"),
             BotCommand(command="clear", description="Ro'yxatni tozalash"),
         ]
     )
@@ -1398,6 +1540,7 @@ async def main() -> None:
     dispatcher.message.register(setup_handler, Command("setup"))
     dispatcher.message.register(help_handler, Command("help"))
     dispatcher.message.register(excel_handler, Command("excel"))
+    dispatcher.message.register(template_handler, Command("shablon"))
     dispatcher.message.register(clear_handler, Command("clear"))
     dispatcher.message.register(photo_handler, F.photo)
     dispatcher.message.register(document_image_handler, F.document)

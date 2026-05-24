@@ -13,6 +13,7 @@ Bu bot yordamida Telegramdagi mijozlar ma'lumotlarini tartiblash, matn yoki rasm
 - Jo'natmalarga qaytarilmaydigan shifr berish: `ABC1`, `ABC2`, `ABC3`...
 - P ustunga faqat import dasturidagi справочникka mos ruscha shahar/tuman nomini yozish
 - `/excel` - tayyor Excel faylni yuborish
+- `/shablon` - Excel shablon faylini yuborish
 - `/clear` - ro'yxatni tozalash
 - `/help` - foydalanish bo'yicha yordam
 
@@ -46,7 +47,7 @@ Bot Excelga yozishdan oldin quyidagilarni so'raydi:
 - jo'natuvchi qaysi tuman/shahardanligi rus tilida
 - shifr prefixi, masalan `ABC`
 - yetkazib berish turi: `ДО ОФИСА` yoki `НА ДОМ`
-- упаковка turi, hozircha `Пакет L` (`794`)
+- упаковка turi: `Пакет L` (`794`) yoki `Пакет M` (`498`), kerak bo'lmasa o'tkazib yuboriladi
 - `Оплата получателем`: `True` yoki `False`
 - hamma jo'natmalar uchun bir xil og'irlik
 - bir mijozga nechta jo'natma bo'lishi
@@ -55,7 +56,9 @@ Bot Excelga yozishdan oldin quyidagilarni so'raydi:
 
 Shundan keyin mijozlar matn yoki rasm qilib yuboriladi. Bot oluvchilarni ajratib, `templates/yangi_shablon.xlsx` asosida `data/customers.xlsx` faylini yaratadi.
 
-`templates/branch_codes.xlsx` faylidagi `Внутренний код` qiymati P ustundagi `Город-получатель` bilan moslanadi va D ustundagi adres boshiga qo'shiladi. P ustun o'z nomi bilan qoladi.
+`templates/branch_codes.xlsx` faylidagi `Внутренний код` qiymatlari D ustun uchun ishlatiladi. P ustun o'z nomi bilan qoladi.
+
+`ДО ОФИСА` tanlansa D ustunga aniqlangan viloyat markazining kodi yoziladi. `НА ДОМ` tanlansa D ustunga mijoz yuborgan manzil/oriyentir yoziladi; manzil bo'lmasa aniqlangan tuman nomiga `markazi` qo'shiladi.
 
 ## O'rnatish
 
