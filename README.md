@@ -44,7 +44,7 @@ Bot Excelga yozishdan oldin quyidagilarni so'raydi:
 - jo'natuvchi telefon raqami
 - jo'natuvchi to'liq manzili
 - jo'natuvchi qaysi tuman/shahardanligi rus tilida
-- qaytarilmaydigan shifr prefixi bot tomonidan avtomatik yaratiladi
+- shifr prefixi, masalan `ABC`
 - yetkazib berish turi: `ДО ОФИСА` yoki `НА ДОМ`
 - упаковка turi, hozircha `Пакет L` (`794`)
 - `Оплата получателем`: `True` yoki `False`

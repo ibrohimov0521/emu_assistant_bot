@@ -5,9 +5,7 @@ import json
 import logging
 import os
 import re
-import secrets
 import shutil
-import string
 from difflib import get_close_matches
 from copy import copy
 from pathlib import Path
@@ -93,6 +91,10 @@ SETUP_STEPS = [
     (
         "sender_city_ru",
         "Jo'natuvchi qaysi tuman/shahardanligini rus tilida kiriting. Masalan: Ташкент, Бухара, Шафиркан",
+    ),
+    (
+        "cipher_prefix",
+        "Jo'natmalar uchun qaytarilmaydigan shifr prefixini kiriting. Masalan: ABC",
     ),
     (
         "delivery_type",
@@ -856,15 +858,6 @@ def is_cipher_prefix_available(prefix: str) -> bool:
     return prefix.upper() not in existing_prefixes and prefix.upper() not in active_prefixes
 
 
-def generate_unique_cipher_prefix(length: int = 4) -> str:
-    alphabet = string.ascii_uppercase
-    for _attempt in range(200):
-        prefix = "".join(secrets.choice(alphabet) for _ in range(length))
-        if is_cipher_prefix_available(prefix):
-            return prefix
-    raise RuntimeError("Yangi shifr yaratib bo'lmadi. Iltimos, /clear yoki /setup bilan qayta urinib ko'ring.")
-
-
 def validate_setup_value(chat_id: int, key: str, value: str) -> tuple[str | None, str | None]:
     value = clean_text(value)
     if not value:
@@ -881,6 +874,17 @@ def validate_setup_value(chat_id: int, key: str, value: str) -> tuple[str | None
         if review:
             return None, "Telefon raqam noaniq. Masalan: 998901234567 yoki +998 90 123 45 67"
         return normalized, None
+
+    if key == "cipher_prefix":
+        prefix = normalize_cipher_prefix(value)
+        if not prefix:
+            return None, "Shifr faqat harf/raqamlardan iborat bo'lsin. Masalan: ABC"
+        current_session = sender_sessions.get(chat_id, {})
+        if current_session.get("cipher_prefix", "").upper() == prefix:
+            return prefix, None
+        if not is_cipher_prefix_available(prefix):
+            return None, f"{prefix} shifri oldin ishlatilgan. Boshqa prefix kiriting."
+        return prefix, None
 
     if key == "payment_by_receiver":
         parsed = parse_bool(value)
@@ -962,8 +966,6 @@ async def save_setup_value_and_advance(
 ) -> None:
     state = setup_states[chat_id]
     state["data"][key] = value
-    if key == "sender_city_ru" and not state["data"].get("cipher_prefix"):
-        state["data"]["cipher_prefix"] = generate_unique_cipher_prefix()
     step_index = state["step"] + 1
 
     if step_index >= len(SETUP_STEPS):
