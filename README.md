@@ -74,7 +74,7 @@ pip install -r requirements.txt
 BOT_TOKEN=telegram_bot_token
 OPENAI_API_KEY=openai_api_key
 OPENAI_MODEL=gpt-4o-mini
-BATCH_CONCURRENCY=4
+BATCH_CONCURRENCY=10
 ```
 
 Botni ishga tushirish:
