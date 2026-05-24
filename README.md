@@ -74,6 +74,7 @@ pip install -r requirements.txt
 BOT_TOKEN=telegram_bot_token
 OPENAI_API_KEY=openai_api_key
 OPENAI_MODEL=gpt-4o-mini
+BATCH_CONCURRENCY=4
 ```
 
 Botni ishga tushirish:
@@ -92,6 +93,7 @@ python main.py
    - `BOT_TOKEN`
    - `OPENAI_API_KEY`
    - `OPENAI_MODEL` ixtiyoriy
+   - `BATCH_CONCURRENCY` ixtiyoriy, bir vaqtda nechta xabar tahlil qilinishini belgilaydi
 4. Start command:
 
 ```bash

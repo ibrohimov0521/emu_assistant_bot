@@ -82,6 +82,8 @@ batch_states: dict[int, "BatchState"] = {}
 
 SUCCESS_NOTICE_INTERVAL_SECONDS = 12
 BATCH_IDLE_SECONDS = 3
+BATCH_CONCURRENCY = max(1, int(os.getenv("BATCH_CONCURRENCY", "4")))
+BATCH_PROGRESS_EDIT_INTERVAL_SECONDS = 1.5
 
 
 @dataclass
@@ -1546,26 +1548,68 @@ async def process_batch(chat_id: int) -> None:
 
     sender = sender_sessions.get(chat_id)
     errors: list[str] = []
+    processed_total = 0
     added_total = 0
+    extracted_by_index: list[list[dict[str, Any]]] = [[] for _ in items]
+    last_progress_edit_at = 0.0
 
-    for index, item in enumerate(items, start=1):
-        try:
-            if sender is None:
-                raise RuntimeError("Jo'natuvchi ma'lumotlari sozlanmagan. /setup ni bosing.")
-
-            customers = await extract_customers_from_batch_item(item)
-            if not customers:
-                raise RuntimeError("mijoz ma'lumotlari topilmadi")
-
-            added_total += await append_customers(customers, sender)
-        except Exception as error:
-            logger.exception("Batch item failed")
-            errors.append(f"{index}-xabar: {error}")
-
+    if sender is None:
         await safe_edit_text(
             progress_message,
-            batch_progress_text(len(items), index, added_total, errors),
+            batch_final_text(
+                len(items),
+                0,
+                ["Jo'natuvchi ma'lumotlari sozlanmagan. /setup ni bosing."],
+            ),
         )
+        batch_states.pop(chat_id, None)
+        return
+
+    semaphore = asyncio.Semaphore(BATCH_CONCURRENCY)
+
+    async def extract_with_index(index: int, item: BatchItem) -> tuple[int, list[dict[str, Any]] | None, str | None]:
+        async with semaphore:
+            try:
+                customers = await extract_customers_from_batch_item(item)
+                if not customers:
+                    raise RuntimeError("mijoz ma'lumotlari topilmadi")
+                return index, customers, None
+            except Exception as error:
+                logger.exception("Batch item failed")
+                return index, None, str(error)
+
+    tasks = [
+        asyncio.create_task(extract_with_index(index, item))
+        for index, item in enumerate(items, start=1)
+    ]
+
+    for task in asyncio.as_completed(tasks):
+        index, customers, error = await task
+        processed_total += 1
+        if customers is not None:
+            extracted_by_index[index - 1] = customers
+        if error:
+            errors.append(f"{index}-xabar: {error}")
+
+        now = asyncio.get_running_loop().time()
+        if processed_total == len(items) or now - last_progress_edit_at >= BATCH_PROGRESS_EDIT_INTERVAL_SECONDS:
+            last_progress_edit_at = now
+            await safe_edit_text(
+                progress_message,
+                batch_progress_text(len(items), processed_total, added_total, errors),
+            )
+
+    customers_to_append = [
+        customer
+        for customers in extracted_by_index
+        for customer in customers
+    ]
+    if customers_to_append:
+        try:
+            added_total = await append_customers(customers_to_append, sender)
+        except Exception as error:
+            logger.exception("Batch append failed")
+            errors.append(f"Excelga yozishda xatolik: {error}")
 
     await safe_edit_text(
         progress_message,
