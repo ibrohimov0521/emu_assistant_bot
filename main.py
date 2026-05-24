@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.types import (
     BotCommand,
@@ -74,6 +75,10 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 sender_sessions: dict[int, dict[str, str]] = {}
 setup_states: dict[int, dict[str, Any]] = {}
 branch_code_cache: dict[str, str] | None = None
+reply_locks: dict[int, asyncio.Lock] = {}
+last_success_notice_at: dict[int, float] = {}
+
+SUCCESS_NOTICE_INTERVAL_SECONDS = 12
 
 
 SETUP_STEPS = [
@@ -918,6 +923,46 @@ def parse_bool(value: str) -> str | None:
     return None
 
 
+def chat_reply_lock(chat_id: int) -> asyncio.Lock:
+    lock = reply_locks.get(chat_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        reply_locks[chat_id] = lock
+    return lock
+
+
+async def safe_answer(message: Message, text: str, **kwargs: Any) -> Any:
+    async with chat_reply_lock(message.chat.id):
+        while True:
+            try:
+                return await message.answer(text, **kwargs)
+            except TelegramRetryAfter as error:
+                await asyncio.sleep(error.retry_after + 1)
+
+
+async def safe_answer_document(message: Message, document: BufferedInputFile, **kwargs: Any) -> Any:
+    async with chat_reply_lock(message.chat.id):
+        while True:
+            try:
+                return await message.answer_document(document, **kwargs)
+            except TelegramRetryAfter as error:
+                await asyncio.sleep(error.retry_after + 1)
+
+
+async def maybe_send_success_notice(message: Message, count: int) -> None:
+    now = asyncio.get_running_loop().time()
+    last_sent = last_success_notice_at.get(message.chat.id, 0)
+    if now - last_sent < SUCCESS_NOTICE_INTERVAL_SECONDS:
+        return
+
+    last_success_notice_at[message.chat.id] = now
+    await safe_answer(
+        message,
+        f"{count} ta mijoz Excel faylga qo'shildi.\n"
+        "Ko'p xabar yuborilganda bot javoblarni kamaytiradi. Faylni olish uchun /excel yuboring.",
+    )
+
+
 def normalize_cipher_prefix(value: str) -> str:
     prefix = re.sub(r"\s+", "", value.strip()).upper()
     return re.sub(r"[^A-ZА-ЯЁ0-9_-]", "", prefix)
@@ -1052,9 +1097,9 @@ async def ask_setup_step(message_or_query: Message | CallbackQuery, step_index: 
 
     if isinstance(message_or_query, CallbackQuery):
         if message_or_query.message:
-            await message_or_query.message.answer(question, reply_markup=keyboard)
+            await safe_answer(message_or_query.message, question, reply_markup=keyboard)
     else:
-        await message_or_query.answer(question, reply_markup=keyboard)
+        await safe_answer(message_or_query, question, reply_markup=keyboard)
 
 
 def setup_summary(session: dict[str, str]) -> str:
@@ -1079,7 +1124,8 @@ async def start_setup(message: Message, reset: bool = False) -> None:
     if reset:
         sender_sessions.pop(chat_id, None)
     setup_states[chat_id] = {"step": 0, "data": {}}
-    await message.answer(
+    await safe_answer(
+        message,
         "Excel yaratishdan oldin jo'natuvchi ma'lumotlarini kiritamiz."
     )
     await ask_setup_step(message, 0)
@@ -1101,9 +1147,9 @@ async def save_setup_value_and_advance(
         summary = setup_summary(sender_sessions[chat_id])
         if isinstance(message_or_query, CallbackQuery):
             if message_or_query.message:
-                await message_or_query.message.answer(summary)
+                await safe_answer(message_or_query.message, summary)
         else:
-            await message_or_query.answer(summary)
+            await safe_answer(message_or_query, summary)
         return
 
     state["step"] = step_index
@@ -1120,7 +1166,7 @@ async def handle_setup_message(message: Message) -> bool:
     key, _question = SETUP_STEPS[step_index]
     parsed_value, error = validate_setup_value(chat_id, key, message.text or "")
     if error:
-        await message.answer(error)
+        await safe_answer(message, error)
         if key in BUTTON_SETUP_OPTIONS:
             await ask_setup_step(message, step_index)
         return True
@@ -1323,25 +1369,24 @@ def call_openai_with_image(image_bytes: bytes, mime_type: str) -> list[dict[str,
 async def handle_customers(message: Message, customers: list[dict[str, Any]]) -> None:
     sender = sender_sessions.get(message.chat.id)
     if sender is None:
-        await message.answer("Avval jo'natuvchi ma'lumotlarini kiritish kerak.")
+        await safe_answer(message, "Avval jo'natuvchi ma'lumotlarini kiritish kerak.")
         await start_setup(message)
         return
 
     if not customers:
-        await message.answer(
+        await safe_answer(
+            message,
             "Mijoz ma'lumotlari topilmadi. Iltimos, matnni aniqroq yuboring yoki rasm sifatini yaxshilang."
         )
         return
 
     count = await append_customers(customers, sender)
-    await message.answer(
-        f"{count} ta mijoz Excel faylga qo'shildi.\n"
-        "Faylni olish uchun /excel buyrug'ini yuboring."
-    )
+    await maybe_send_success_notice(message, count)
 
 
 async def start_handler(message: Message) -> None:
-    await message.answer(
+    await safe_answer(
+        message,
         "Assalomu alaykum!\n\n"
         "Men jo'natuvchi ma'lumotlari asosida mijoz ma'lumotlarini matn yoki rasm ichidan ajratib, Excel shablonga yozib boraman.\n\n"
         "Yuborishingiz mumkin:\n"
@@ -1360,7 +1405,8 @@ async def start_handler(message: Message) -> None:
 
 
 async def help_handler(message: Message) -> None:
-    await message.answer(
+    await safe_answer(
+        message,
         "Foydalanish:\n\n"
         "1. Mijoz ma'lumotlarini matn qilib yuboring yoki rasm jo'nating.\n"
         "2. Agar jo'natuvchi ma'lumotlari kiritilmagan bo'lsa, bot avval ularni so'raydi.\n"
@@ -1382,7 +1428,8 @@ async def setup_handler(message: Message) -> None:
 
 async def excel_handler(message: Message) -> None:
     file_bytes = await get_excel_bytes()
-    await message.answer_document(
+    await safe_answer_document(
+        message,
         BufferedInputFile(file_bytes, filename="customers.xlsx"),
         caption="Yangilangan mijozlar ro'yxati.",
     )
@@ -1390,10 +1437,11 @@ async def excel_handler(message: Message) -> None:
 
 async def template_handler(message: Message) -> None:
     if not TEMPLATE_PATH.exists():
-        await message.answer("Shablon fayl topilmadi.")
+        await safe_answer(message, "Shablon fayl topilmadi.")
         return
 
-    await message.answer_document(
+    await safe_answer_document(
+        message,
         BufferedInputFile(TEMPLATE_PATH.read_bytes(), filename="yangi_shablon.xlsx"),
         caption="Excel shablon fayli.",
     )
@@ -1404,7 +1452,7 @@ async def clear_handler(message: Message) -> None:
         reset_excel_file()
     sender_sessions.pop(message.chat.id, None)
     setup_states.pop(message.chat.id, None)
-    await message.answer("Ro'yxat tozalandi. Yangi Excel fayl shablondan tayyorlanadi.")
+    await safe_answer(message, "Ro'yxat tozalandi. Yangi Excel fayl shablondan tayyorlanadi.")
     await start_setup(message)
 
 
@@ -1417,31 +1465,22 @@ async def text_handler(message: Message) -> None:
         await start_setup(message)
         return
 
-    processing = await message.answer("Matn tahlil qilinyapti...")
-
     try:
         customers = await asyncio.to_thread(call_openai_with_text, text)
         await handle_customers(message, customers)
     except Exception as error:
         logger.exception("Text parsing failed")
-        await message.answer(f"Xatolik yuz berdi: {error}")
-    finally:
-        try:
-            await processing.delete()
-        except Exception:
-            pass
+        await safe_answer(message, f"Xatolik yuz berdi: {error}")
 
 
 async def photo_handler(message: Message, bot: Bot) -> None:
     if message.chat.id in setup_states:
-        await message.answer("Hozir jo'natuvchi ma'lumotlarini matn ko'rinishida kiriting.")
+        await safe_answer(message, "Hozir jo'natuvchi ma'lumotlarini matn ko'rinishida kiriting.")
         return
 
     if message.chat.id not in sender_sessions:
         await start_setup(message)
         return
-
-    processing = await message.answer("Rasm o'qilyapti va tahlil qilinyapti...")
 
     try:
         photo = message.photo[-1]
@@ -1458,17 +1497,12 @@ async def photo_handler(message: Message, bot: Bot) -> None:
         await handle_customers(message, customers)
     except Exception as error:
         logger.exception("Image parsing failed")
-        await message.answer(f"Xatolik yuz berdi: {error}")
-    finally:
-        try:
-            await processing.delete()
-        except Exception:
-            pass
+        await safe_answer(message, f"Xatolik yuz berdi: {error}")
 
 
 async def document_image_handler(message: Message, bot: Bot) -> None:
     if message.chat.id in setup_states:
-        await message.answer("Hozir jo'natuvchi ma'lumotlarini matn ko'rinishida kiriting.")
+        await safe_answer(message, "Hozir jo'natuvchi ma'lumotlarini matn ko'rinishida kiriting.")
         return
 
     if message.chat.id not in sender_sessions:
@@ -1477,10 +1511,8 @@ async def document_image_handler(message: Message, bot: Bot) -> None:
 
     document = message.document
     if document is None or not (document.mime_type or "").startswith("image/"):
-        await message.answer("Iltimos, rasm yoki mijoz ma'lumotlari yozilgan matn yuboring.")
+        await safe_answer(message, "Iltimos, rasm yoki mijoz ma'lumotlari yozilgan matn yuboring.")
         return
-
-    processing = await message.answer("Rasm fayli o'qilyapti va tahlil qilinyapti...")
 
     try:
         file = await bot.get_file(document.file_id)
@@ -1496,16 +1528,11 @@ async def document_image_handler(message: Message, bot: Bot) -> None:
         await handle_customers(message, customers)
     except Exception as error:
         logger.exception("Document image parsing failed")
-        await message.answer(f"Xatolik yuz berdi: {error}")
-    finally:
-        try:
-            await processing.delete()
-        except Exception:
-            pass
+        await safe_answer(message, f"Xatolik yuz berdi: {error}")
 
 
 async def unsupported_handler(message: Message) -> None:
-    await message.answer("Matn yoki rasm yuboring. Yordam uchun /help buyrug'ini bosing.")
+    await safe_answer(message, "Matn yoki rasm yuboring. Yordam uchun /help buyrug'ini bosing.")
 
 
 async def setup_bot_commands(bot: Bot) -> None:
