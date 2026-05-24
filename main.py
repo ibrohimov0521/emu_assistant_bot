@@ -982,6 +982,39 @@ async def safe_edit_text(message: Message, text: str, **kwargs: Any) -> None:
                 return
 
 
+def remember_setup_message(chat_id: int, message: Message | None) -> None:
+    if message is None:
+        return
+
+    state = setup_states.get(chat_id)
+    if state is None:
+        return
+
+    messages = state.setdefault("cleanup_messages", [])
+    if any(saved.message_id == message.message_id for saved in messages):
+        return
+    messages.append(message)
+
+
+async def cleanup_setup_messages(chat_id: int) -> None:
+    state = setup_states.get(chat_id)
+    if state is None:
+        return
+
+    messages = state.get("cleanup_messages", [])
+    state["cleanup_messages"] = []
+    for message in messages:
+        while True:
+            try:
+                await message.delete()
+                break
+            except TelegramRetryAfter as error:
+                await asyncio.sleep(error.retry_after + 1)
+            except Exception as error:
+                logger.debug("Setup message cleanup failed: %s", error)
+                break
+
+
 async def maybe_send_success_notice(message: Message, count: int) -> None:
     now = asyncio.get_running_loop().time()
     last_sent = last_success_notice_at.get(message.chat.id, 0)
@@ -1124,15 +1157,22 @@ def setup_step_keyboard(key: str) -> InlineKeyboardMarkup | None:
 async def ask_setup_step(message_or_query: Message | CallbackQuery, step_index: int) -> None:
     key, question = SETUP_STEPS[step_index]
     keyboard = setup_step_keyboard(key)
+    sent_message = None
+    chat_id = None
 
     if key == "cipher_prefix":
         question = f"{question}\n\nShifr kerak bo'lmasa, pastdagi tugmani bosing."
 
     if isinstance(message_or_query, CallbackQuery):
         if message_or_query.message:
-            await safe_answer(message_or_query.message, question, reply_markup=keyboard)
+            chat_id = message_or_query.message.chat.id
+            sent_message = await safe_answer(message_or_query.message, question, reply_markup=keyboard)
     else:
-        await safe_answer(message_or_query, question, reply_markup=keyboard)
+        chat_id = message_or_query.chat.id
+        sent_message = await safe_answer(message_or_query, question, reply_markup=keyboard)
+
+    if chat_id is not None:
+        remember_setup_message(chat_id, sent_message)
 
 
 def setup_summary(session: dict[str, str]) -> str:
@@ -1156,11 +1196,12 @@ async def start_setup(message: Message, reset: bool = False) -> None:
     chat_id = message.chat.id
     if reset:
         sender_sessions.pop(chat_id, None)
-    setup_states[chat_id] = {"step": 0, "data": {}}
-    await safe_answer(
+    setup_states[chat_id] = {"step": 0, "data": {}, "cleanup_messages": []}
+    intro_message = await safe_answer(
         message,
         "Excel yaratishdan oldin jo'natuvchi ma'lumotlarini kiritamiz."
     )
+    remember_setup_message(chat_id, intro_message)
     await ask_setup_step(message, 0)
 
 
@@ -1204,6 +1245,8 @@ async def handle_setup_message(message: Message) -> bool:
             await ask_setup_step(message, step_index)
         return True
 
+    remember_setup_message(chat_id, message)
+    await cleanup_setup_messages(chat_id)
     await save_setup_value_and_advance(message, chat_id, key, parsed_value or "")
     return True
 
@@ -1232,12 +1275,10 @@ async def setup_callback_handler(callback: CallbackQuery) -> None:
         await callback.answer(error, show_alert=True)
         return
 
-    await callback.answer(f"Tanlandi: {parsed_value}")
     if callback.message:
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        remember_setup_message(chat_id, callback.message)
+    await callback.answer(f"Tanlandi: {parsed_value}")
+    await cleanup_setup_messages(chat_id)
     await save_setup_value_and_advance(callback, chat_id, expected_key, parsed_value or "")
 
 
