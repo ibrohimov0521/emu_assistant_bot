@@ -3,6 +3,8 @@
 __pycache__/
 *.pyc
 data/customers.xlsx
+data/*.xlsx
+!data/.gitkeep
 data/approved_users.json
 mingit/
 MinGit-*.zip

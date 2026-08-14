@@ -6,6 +6,9 @@ Bu bot yordamida Telegramdagi mijozlar ma'lumotlarini tartiblash, matn yoki rasm
 
 - `/start` - bot haqida qisqa tushuntirish
 - `/setup` - jo'natuvchi ma'lumotlari va jo'natma parametrlarini qayta sozlash
+- `/ofislar` - EMU ofislarini viloyat bo'yicha ko'rish
+- `/kalkulyator` - EMU API orqali yetkazib berish narxini hisoblash
+- `/ai` - EMU bo'yicha savollar uchun AI yordamchi
 - Matndan mijozlarni ajratish
 - Rasm, skrinshot yoki qo'lda yozilgan daftar rasmlaridan ma'lumot ajratish
 - Bir xabardagi bir nechta mijozni alohida Excel qatorlariga yozish
@@ -16,6 +19,17 @@ Bu bot yordamida Telegramdagi mijozlar ma'lumotlarini tartiblash, matn yoki rasm
 - `/shablon` - Excel shablon faylini yuborish
 - `/clear` - ro'yxatni tozalash
 - `/help` - foydalanish bo'yicha yordam
+
+## Asosiy menyu
+
+Bot ruxsat berilgan foydalanuvchiga quyidagi bo'limlarni ko'rsatadi:
+
+- `Excel ga yig'ish` - yuridik yoki ФИЗ ЛИЦО yo'nalishi bo'yicha jo'natmalarni Excelga yig'ish
+- `Ofislar ro'yxati` - oldin viloyat tanlanadi, keyin shu viloyatdagi EMU ofislari chiqadi
+- `Kalkulyator` - jo'natuvchi va oluvchi hudud, yetkazish turi va og'irlik bo'yicha narx chiqaradi
+- `AI yordamchi` - ofis, filial, shahar/tuman va kalkulyator bo'yicha savollarga yordam beradi
+- `Arxiv` - Excel va shablon fayllar
+- `Sozlamalar` - jo'natuvchi sozlamalari va ruxsat holati
 
 ## Excel ustunlari
 

@@ -773,17 +773,20 @@ Qoidalar:
 def apply_template_header(sheet: Any) -> None:
     if TEMPLATE_PATH.exists():
         template = load_workbook(TEMPLATE_PATH)
-        template_sheet = template.active
-        for col in range(1, EXCEL_COLUMN_COUNT + 1):
-            source = template_sheet.cell(1, col)
-            target = sheet.cell(1, col)
-            target.value = source.value
-            if source.has_style:
-                target._style = copy(source._style)
-            target.number_format = source.number_format
-            target.alignment = copy(source.alignment)
-            letter = target.column_letter
-            sheet.column_dimensions[letter].width = template_sheet.column_dimensions[letter].width
+        try:
+            template_sheet = template.active
+            for col in range(1, EXCEL_COLUMN_COUNT + 1):
+                source = template_sheet.cell(1, col)
+                target = sheet.cell(1, col)
+                target.value = source.value
+                if source.has_style:
+                    target._style = copy(source._style)
+                target.number_format = source.number_format
+                target.alignment = copy(source.alignment)
+                letter = target.column_letter
+                sheet.column_dimensions[letter].width = template_sheet.column_dimensions[letter].width
+        finally:
+            template.close()
         return
 
     for col, header in enumerate(HEADERS, start=1):
@@ -792,33 +795,36 @@ def apply_template_header(sheet: Any) -> None:
 
 def ensure_workbook_schema() -> None:
     workbook = load_workbook(EXCEL_PATH)
-    sheet = workbook.active
-    current_headers = [sheet.cell(1, col).value for col in range(1, EXCEL_COLUMN_COUNT + 1)]
+    try:
+        sheet = workbook.active
+        current_headers = [sheet.cell(1, col).value for col in range(1, EXCEL_COLUMN_COUNT + 1)]
 
-    if current_headers == HEADERS:
-        return
+        if current_headers == HEADERS:
+            return
 
-    if (
-        current_headers[:17] == HEADERS[:17]
-        and current_headers[17] == "Код упаковке"
-        and (len(current_headers) < 19 or current_headers[18] in (None, ""))
-    ):
-        sheet.insert_cols(18)
+        if (
+            current_headers[:17] == HEADERS[:17]
+            and current_headers[17] == "Код упаковке"
+            and (len(current_headers) < 19 or current_headers[18] in (None, ""))
+        ):
+            sheet.insert_cols(18)
+            apply_template_header(sheet)
+            workbook.save(EXCEL_PATH)
+            return
+
+        if current_headers[: EXCEL_COLUMN_COUNT - 1] == HEADERS[:-1] and current_headers[-1] in (None, ""):
+            apply_template_header(sheet)
+            workbook.save(EXCEL_PATH)
+            return
+
+        first_row_has_data = any(value not in (None, "") for value in current_headers)
+        if first_row_has_data:
+            sheet.insert_rows(1)
+
         apply_template_header(sheet)
         workbook.save(EXCEL_PATH)
-        return
-
-    if current_headers[: EXCEL_COLUMN_COUNT - 1] == HEADERS[:-1] and current_headers[-1] in (None, ""):
-        apply_template_header(sheet)
-        workbook.save(EXCEL_PATH)
-        return
-
-    first_row_has_data = any(value not in (None, "") for value in current_headers)
-    if first_row_has_data:
-        sheet.insert_rows(1)
-
-    apply_template_header(sheet)
-    workbook.save(EXCEL_PATH)
+    finally:
+        workbook.close()
 
 
 def ensure_excel_file() -> None:
@@ -830,11 +836,14 @@ def ensure_excel_file() -> None:
     if TEMPLATE_PATH.exists():
         shutil.copyfile(TEMPLATE_PATH, EXCEL_PATH)
         workbook = load_workbook(EXCEL_PATH)
-        sheet = workbook.active
-        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=EXCEL_COLUMN_COUNT):
-            for cell in row:
-                cell.value = None
-        workbook.save(EXCEL_PATH)
+        try:
+            sheet = workbook.active
+            for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=EXCEL_COLUMN_COUNT):
+                for cell in row:
+                    cell.value = None
+            workbook.save(EXCEL_PATH)
+        finally:
+            workbook.close()
         return
 
     workbook = Workbook()
@@ -951,13 +960,16 @@ def load_branch_codes() -> dict[str, str]:
         return branch_code_cache
 
     workbook = load_workbook(BRANCH_CODES_PATH, data_only=True)
-    sheet = workbook.active
-    for row_index in range(2, sheet.max_row + 1):
-        code = clean_text(sheet.cell(row_index, 1).value)
-        city = clean_text(sheet.cell(row_index, 2).value)
-        key = normalize_location_key(city)
-        if code and key and key not in branch_code_cache:
-            branch_code_cache[key] = code
+    try:
+        sheet = workbook.active
+        for row_index in range(2, sheet.max_row + 1):
+            code = clean_text(sheet.cell(row_index, 1).value)
+            city = clean_text(sheet.cell(row_index, 2).value)
+            key = normalize_location_key(city)
+            if code and key and key not in branch_code_cache:
+                branch_code_cache[key] = code
+    finally:
+        workbook.close()
 
     return branch_code_cache
 
@@ -990,16 +1002,60 @@ def format_recipient_address(value: Any, recipient_location: str, delivery_type:
     return "", ""
 
 
+CYRILLIC_TO_LATIN = str.maketrans(
+    {
+        "а": "a",
+        "б": "b",
+        "в": "v",
+        "г": "g",
+        "д": "d",
+        "е": "e",
+        "ё": "yo",
+        "ж": "j",
+        "з": "z",
+        "и": "i",
+        "й": "y",
+        "к": "k",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "о": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ф": "f",
+        "х": "x",
+        "ц": "s",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "sh",
+        "ъ": "",
+        "ы": "i",
+        "ь": "",
+        "э": "e",
+        "ю": "yu",
+        "я": "ya",
+        "қ": "q",
+        "ғ": "g",
+        "ҳ": "h",
+        "ў": "o",
+    }
+)
+
+
+def transliterate_location_text(value: str) -> str:
+    return value.casefold().translate(CYRILLIC_TO_LATIN)
+
+
 def normalize_location_key(value: str) -> str:
-    value = value.lower().replace("ё", "е")
+    value = transliterate_location_text(value)
     replacements = {
-        "ў": "у",
-        "ғ": "г",
         "ģ": "g",
         "ğ": "g",
-        "қ": "к",
-        "ҳ": "х",
         "ʼ": "",
+        "ʻ": "",
         "‘": "",
         "’": "",
         "'": "",
@@ -1008,7 +1064,7 @@ def normalize_location_key(value: str) -> str:
     }
     for source, target in replacements.items():
         value = value.replace(source, target)
-    return re.sub(r"[^a-zа-я0-9]+", "", value)
+    return re.sub(r"[^a-z0-9]+", "", value)
 
 
 LOCATION_BY_KEY = {
@@ -1021,6 +1077,8 @@ LOCATION_ALIASES = {
     "boot": "Багат",
     "bogot tumani": "Багат",
     "bagat": "Багат",
+    "toshkent": "Ташкент",
+    "tashkent": "Ташкент",
     "olmazor": "Алмазар",
     "almazar": "Алмазар",
     "yunusobod": "Юнусабад",
@@ -1085,6 +1143,30 @@ LOCATION_ALIASES = {
     "altyaryk": "Алтыарык",
     "andijon": "Андижан",
     "andijan": "Андижан",
+    "jizzax": "Джизак",
+    "jizzakh": "Джизак",
+    "djizak": "Джизак",
+    "qashqadaryo": "Карши",
+    "kashkadarya": "Карши",
+    "qarshi": "Карши",
+    "karshi": "Карши",
+    "navoiy": "Навои",
+    "navoi": "Навои",
+    "namangan": "Наманган",
+    "qoraqalpogiston": "Нукус",
+    "qoraqalpog'iston": "Нукус",
+    "karakalpakstan": "Нукус",
+    "nukus": "Нукус",
+    "sirdaryo": "Гулистан",
+    "syrdarya": "Гулистан",
+    "surxondaryo": "Термез",
+    "surkhandarya": "Термез",
+    "termiz": "Термез",
+    "termez": "Термез",
+    "xorazm": "Ургенч",
+    "khorezm": "Ургенч",
+    "urganch": "Ургенч",
+    "urgench": "Ургенч",
     "qorgontepa": "Кургантепа",
     "kurgantepa": "Кургантепа",
     "qurgontepa": "Кургантепа",
@@ -1197,6 +1279,9 @@ LOCATION_STOP_WORDS = {
     "shaharchasi",
     "kocha",
     "kochasi",
+    "oblast",
+    "rayon",
+    "gorod",
     "mahalla",
     "mahallasi",
     "mfy",
@@ -1208,15 +1293,12 @@ LOCATION_STOP_WORDS = {
 
 
 def location_tokens(value: str) -> list[str]:
-    normalized = value.lower().replace("ё", "е")
+    normalized = transliterate_location_text(value)
     replacements = {
-        "ў": "u",
-        "ғ": "g",
         "ģ": "g",
         "ğ": "g",
-        "қ": "q",
-        "ҳ": "h",
         "ʼ": "",
+        "ʻ": "",
         "‘": "",
         "’": "",
         "'": "",
@@ -1225,7 +1307,7 @@ def location_tokens(value: str) -> list[str]:
     for source, target in replacements.items():
         normalized = normalized.replace(source, target)
 
-    tokens = re.findall(r"[a-zа-я0-9]+", normalized)
+    tokens = re.findall(r"[a-z0-9]+", normalized)
     return [token for token in tokens if token not in LOCATION_STOP_WORDS and len(token) > 1]
 
 
@@ -1243,9 +1325,8 @@ def fuzzy_location_from_key(key: str) -> str:
         return ""
 
     searchable = {**LOCATION_BY_KEY, **LOCATION_ALIAS_BY_KEY}
-    for candidate_key, location in searchable.items():
-        if candidate_key and (candidate_key in key or key in candidate_key):
-            return location
+    if key in searchable:
+        return searchable[key]
 
     matches = get_close_matches(key, list(searchable.keys()), n=1, cutoff=0.76)
     if matches:
@@ -1254,8 +1335,28 @@ def fuzzy_location_from_key(key: str) -> str:
     return ""
 
 
+def location_specificity(location: str) -> int:
+    if not location:
+        return 0
+    center = region_center_for_location(location)
+    return 1 if center == location else 2
+
+
 def fuzzy_location_from_text(value: str) -> str:
-    for key in token_window_keys(value):
+    keys = token_window_keys(value)
+    candidates: list[tuple[int, int, str]] = []
+    searchable = {**LOCATION_BY_KEY, **LOCATION_ALIAS_BY_KEY}
+
+    for index, key in enumerate(keys):
+        location = searchable.get(key)
+        if location:
+            candidates.append((location_specificity(location), -index, location))
+
+    if candidates:
+        candidates.sort(reverse=True)
+        return candidates[0][2]
+
+    for key in keys:
         location = fuzzy_location_from_key(key)
         if location:
             return location
@@ -1589,8 +1690,11 @@ def copy_row_style(sheet: Any, source_row: int, target_row: int) -> None:
 def is_cipher_prefix_available(prefix: str) -> bool:
     ensure_excel_file()
     workbook = load_workbook(EXCEL_PATH)
-    sheet = workbook.active
-    existing_prefixes = used_cipher_prefixes(sheet)
+    try:
+        sheet = workbook.active
+        existing_prefixes = used_cipher_prefixes(sheet)
+    finally:
+        workbook.close()
     active_prefixes = {
         session.get("cipher_prefix", "").upper()
         for session in sender_sessions.values()
@@ -1880,26 +1984,29 @@ async def append_customers(customers: list[dict[str, Any]], sender: dict[str, st
     async with excel_lock:
         ensure_excel_file()
         workbook = load_workbook(EXCEL_PATH)
-        sheet = workbook.active
+        try:
+            sheet = workbook.active
 
-        next_row = find_last_data_row(sheet) + 1
-        next_number = next_row - 1
-        next_code_index = next_cipher_index(sheet, sender["cipher_prefix"]) if sender["cipher_prefix"] else 1
-        for row in rows:
-            copy_row_style(sheet, 2, next_row)
-            row[0] = next_number
-            row[5] = f"{sender['cipher_prefix']}{next_code_index}" if sender["cipher_prefix"] else ""
-            review = row.pop()
-            if review:
-                row[7] = "; ".join(part for part in [row[7], review] if part)
-            for column_index, value in enumerate(row, start=1):
-                sheet.cell(next_row, column_index).value = value
-            next_row += 1
-            next_number += 1
-            if sender["cipher_prefix"]:
-                next_code_index += 1
+            next_row = find_last_data_row(sheet) + 1
+            next_number = next_row - 1
+            next_code_index = next_cipher_index(sheet, sender["cipher_prefix"]) if sender["cipher_prefix"] else 1
+            for row in rows:
+                copy_row_style(sheet, 2, next_row)
+                row[0] = next_number
+                row[5] = f"{sender['cipher_prefix']}{next_code_index}" if sender["cipher_prefix"] else ""
+                review = row.pop()
+                if review:
+                    row[7] = "; ".join(part for part in [row[7], review] if part)
+                for column_index, value in enumerate(row, start=1):
+                    sheet.cell(next_row, column_index).value = value
+                next_row += 1
+                next_number += 1
+                if sender["cipher_prefix"]:
+                    next_code_index += 1
 
-        workbook.save(EXCEL_PATH)
+            workbook.save(EXCEL_PATH)
+        finally:
+            workbook.close()
 
     return len(rows)
 
@@ -2197,6 +2304,24 @@ async def setup_handler(message: Message) -> None:
     if not await ensure_user_access(message):
         return
     await start_setup(message, reset=True)
+
+
+async def offices_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
+    await show_offices_menu(message)
+
+
+async def calculator_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
+    await show_calculator_menu(message)
+
+
+async def ai_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
+    await show_ai_assistant(message)
 
 
 async def excel_handler(message: Message) -> None:
@@ -2738,6 +2863,9 @@ async def setup_bot_commands(bot: Bot) -> None:
         [
             BotCommand(command="start", description="Botni ishga tushirish"),
             BotCommand(command="setup", description="ФИЗ ЛИЦО jo'natuvchi sozlamalari"),
+            BotCommand(command="ofislar", description="EMU ofislar ro'yxati"),
+            BotCommand(command="kalkulyator", description="Yetkazib berish narxini hisoblash"),
+            BotCommand(command="ai", description="EMU bo'yicha AI yordamchi"),
             BotCommand(command="help", description="Foydalanish bo'yicha yordam"),
             BotCommand(command="excel", description="Excel faylni yuborish"),
             BotCommand(command="shablon", description="Excel shablonni yuborish"),
@@ -2767,6 +2895,9 @@ async def main() -> None:
     dispatcher.callback_query.register(setup_callback_handler, F.data.startswith("setup:"))
     dispatcher.message.register(start_handler, Command("start"))
     dispatcher.message.register(setup_handler, Command("setup"))
+    dispatcher.message.register(offices_handler, Command("ofislar"))
+    dispatcher.message.register(calculator_handler, Command("kalkulyator"))
+    dispatcher.message.register(ai_handler, Command("ai"))
     dispatcher.message.register(help_handler, Command("help"))
     dispatcher.message.register(excel_handler, Command("excel"))
     dispatcher.message.register(template_handler, Command("shablon"))
