@@ -2559,7 +2559,7 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
         await callback.answer()
         if callback.message:
             await safe_edit_text(callback.message, "Asosiy menyuga qaytdingiz.")
-            await safe_send_message(callback.bot, chat_id, "Asosiy menyu", reply_markup=main_menu_keyboard())
+            await safe_send_message(callback.bot, chat_id, "🏠 Asosiy menyu", reply_markup=main_menu_keyboard())
         return
 
     try:
@@ -2569,14 +2569,16 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
             regions = await get_emu_regions()
             region = next((item for item in regions if int(item.get("id") or 0) == region_id), {})
             title = f"{localized_name(region)} ofislari"
+            state = service_states.setdefault(chat_id, {"mode": "offices"})
+            state.update({"step": "branches", "branches": branches, "page": 0, "title": title})
             await callback.answer("Ofislar yuklandi.")
             if callback.message:
-                await safe_edit_text(
-                    callback.message,
-                    format_branches_list(branches, title),
-                    reply_markup=InlineKeyboardMarkup(
-                        inline_keyboard=[[InlineKeyboardButton(text=MENU_BACK, callback_data="emu:back")]]
-                    ),
+                await safe_edit_text(callback.message, "🏢 Ofislar pastki menyuga chiqarildi.")
+                await safe_send_message(
+                    callback.bot,
+                    chat_id,
+                    format_branches_page(branches, title, 0),
+                    reply_markup=offices_page_keyboard(0, len(branches)),
                 )
             return
 
@@ -2589,19 +2591,23 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
                 state.update({"sender_city_id": TASHKENT_CITY_ID, "step": "receiver_region"})
                 regions = await get_emu_regions()
                 if callback.message:
-                    await safe_edit_text(
-                        callback.message,
+                    await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                    await safe_send_message(
+                        callback.bot,
+                        chat_id,
                         "Jo'natilish nuqtasi: Toshkent.\n\nEndi olish nuqtasining viloyatini tanlang.",
-                        reply_markup=region_keyboard(regions, "emu:calc_receiver_region"),
+                        reply_markup=region_reply_keyboard(regions, state),
                     )
                 return
             cities = await get_emu_cities(region_id)
             state["step"] = "sender_city"
             if callback.message:
-                await safe_edit_text(
-                    callback.message,
+                await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                await safe_send_message(
+                    callback.bot,
+                    chat_id,
                     "Jo'natilish nuqtasining tuman/shahrini tanlang.",
-                    reply_markup=city_keyboard(cities, "emu:calc_sender_city"),
+                    reply_markup=city_reply_keyboard(cities, state),
                 )
             return
 
@@ -2612,10 +2618,12 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
             regions = await get_emu_regions()
             await callback.answer()
             if callback.message:
-                await safe_edit_text(
-                    callback.message,
+                await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                await safe_send_message(
+                    callback.bot,
+                    chat_id,
                     "Endi olish nuqtasining viloyatini tanlang.",
-                    reply_markup=region_keyboard(regions, "emu:calc_receiver_region"),
+                    reply_markup=region_reply_keyboard(regions, state),
                 )
             return
 
@@ -2627,19 +2635,23 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
             if region_id == TASHKENT_REGION_ID:
                 state.update({"receiver_city_id": TASHKENT_CITY_ID, "step": "service"})
                 if callback.message:
-                    await safe_edit_text(
-                        callback.message,
+                    await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                    await safe_send_message(
+                        callback.bot,
+                        chat_id,
                         "Olish nuqtasi: Toshkent.\n\nYetkazib berish turini tanlang.",
-                        reply_markup=service_keyboard(),
+                        reply_markup=calculator_service_reply_keyboard(),
                     )
                 return
             cities = await get_emu_cities(region_id)
             state["step"] = "receiver_city"
             if callback.message:
-                await safe_edit_text(
-                    callback.message,
+                await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                await safe_send_message(
+                    callback.bot,
+                    chat_id,
                     "Olish nuqtasining tuman/shahrini tanlang.",
-                    reply_markup=city_keyboard(cities, "emu:calc_receiver_city"),
+                    reply_markup=city_reply_keyboard(cities, state),
                 )
             return
 
@@ -2649,10 +2661,12 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
             state.update({"receiver_city_id": city_id, "step": "service"})
             await callback.answer()
             if callback.message:
-                await safe_edit_text(
-                    callback.message,
+                await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                await safe_send_message(
+                    callback.bot,
+                    chat_id,
                     "Olish turi: ofisgachami yoki uygachami?",
-                    reply_markup=service_keyboard(),
+                    reply_markup=calculator_service_reply_keyboard(),
                 )
             return
 
@@ -2662,10 +2676,13 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
             state.update({"service_id": service_id, "step": "weight"})
             await callback.answer()
             if callback.message:
-                await safe_edit_text(
-                    callback.message,
+                await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                await safe_send_message(
+                    callback.bot,
+                    chat_id,
                     "Jo'natmaning og'irligini kiriting.\n\n"
                     "Agar gabaritda o'lchangan og'irligi kattaroq bo'lsa, shuni kiriting. Masalan: 1.5",
+                    reply_markup=reply_keyboard([], add_back=True),
                 )
             return
     except Exception as error:
