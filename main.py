@@ -918,6 +918,8 @@ Qoidalar:
 - Ism yo'q bo'lsa "Mijoz", "Noma'lum", "Customer" kabi placeholder yozmang, full_name bo'sh string bo'lsin.
 - Bitta xabarda bitta ism/manzil va bir nechta telefon raqami bo'lsa, buni bitta mijoz deb oling: hamma telefon raqamlarni phone maydoniga yozing, note maydoniga telefon yozmang.
 - Faqat aniq boshqa-boshqa mijozlar bo'lsa alohida obyekt qiling.
+- address maydoniga faqat yetkazish manzilini yozing. Narx, to'lov summasi, rang, tovar/vlojenie, o'lcham, kiyim turi kabi ma'lumotlarni addressga qo'shmang; ularni note maydoniga yozing.
+- Masalan: "Farg'ona Mustaqillik ko'cha mehmonxona oldi, 360.000 so'm qora" bo'lsa address="Farg'ona Mustaqillik ko'cha mehmonxona oldi", note="360.000 so'm qora".
 - recipient_region_ru hech qachon "Ферганская область, Учкуприкский район" kabi bo'lmasin; ro'yxatdagi "Учкуприк" kabi bitta qiymat bo'lsin.
 - Agar manzilda viloyat/tuman/shahar nomi bor bo'lsa, recipient_region_ru ni bo'sh qoldirmang; ro'yxatdan eng yaqin mos qiymatni tanlang.
 - "Samarqand viloyati Paxtachi tumani" bo'lsa recipient_region_ru uchun "Пахтачи" yozing.
@@ -1082,6 +1084,26 @@ def normalize_phone(raw_phone: str) -> tuple[str, str]:
 
 
 PHONE_CANDIDATE_RE = re.compile(r"\+?\d[\d\s\-()]{7,}\d")
+PRICE_RE = re.compile(
+    r"(?i)(?:\b\d{1,3}(?:[ .]\d{3})+(?:[,.]\d+)?|\b\d+(?:[,.]\d+)?)\s*"
+    r"(?:so['‘’`]?m|sum|som|сум|сўм|uzs)\b"
+)
+ADDRESS_HINT_RE = re.compile(
+    r"(?i)\b("
+    r"viloyat|vilo?yati|tuman|tumani|shahar|shahri|ko['‘’`]?cha|ko['‘’`]?chasi|"
+    r"mahalla|mfy|massiv|mavze|daha|uy|dom|kv|xonadon|orientir|mo['‘’`]?ljal|"
+    r"oldi|orqa|yonida|qarshi|ro['‘’`]?para|bekat|bozor|maktab|bog['‘’`]?cha|"
+    r"г\.|город|область|район|улица|ул\.|махалля|дом|кв|ориентир|рядом|напротив"
+    r")\b"
+)
+PARCEL_NOTE_RE = re.compile(
+    r"(?i)\b("
+    r"qora|oq|qizil|ko['‘’`]?k|kok|yashil|sariq|kulrang|jigarrang|pushti|"
+    r"черн|бел|красн|син|зел|желт|сер|корич|роз|"
+    r"kiyim|kuylak|shim|oyoq|sumka|kross|tufli|razmer|o['‘’`]?lcham|размер|"
+    r"платье|брюк|обув|сумк|товар|dona|ta|шт"
+    r")\b"
+)
 
 
 def extract_phone_candidates(*values: str) -> list[str]:
@@ -1123,6 +1145,41 @@ def strip_phone_candidates(value: str) -> str:
     text = re.sub(r"\b(qolgan|ikkinchi|2-?chi|telefon|tel|raqamlar|raqami)\b\s*:?", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*[,;|/]\s*", " ", text)
     return re.sub(r"\s{2,}", " ", text).strip(" -,:;|/")
+
+
+def clean_split_part(value: str) -> str:
+    return re.sub(r"\s{2,}", " ", clean_text(value)).strip(" -,:;|/")
+
+
+def looks_like_parcel_note(value: str) -> bool:
+    text = clean_split_part(value)
+    if not text:
+        return False
+    if PRICE_RE.search(text):
+        return True
+    return bool(PARCEL_NOTE_RE.search(text)) and not ADDRESS_HINT_RE.search(text)
+
+
+def split_address_and_note(value: Any) -> tuple[str, str]:
+    text = strip_phone_candidates(clean_text(value))
+    if not text:
+        return "", ""
+
+    price_match = PRICE_RE.search(text)
+    if price_match:
+        address = clean_split_part(text[: price_match.start()])
+        note = clean_split_part(text[price_match.start() :])
+        return address, note
+
+    separators = re.split(r"([,;\n]+)", text)
+    parts = [clean_split_part(part) for part in separators if clean_split_part(part) and not re.fullmatch(r"[,;\n]+", part)]
+    note_parts: list[str] = []
+    while parts and looks_like_parcel_note(parts[-1]):
+        note_parts.insert(0, parts.pop())
+
+    address = clean_split_part(", ".join(parts))
+    note = clean_split_part(", ".join(note_parts))
+    return address, note
 
 
 def clean_text(value: Any) -> str:
@@ -2130,14 +2187,22 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
     rows = []
     is_legal = sender.get("client_type") == CLIENT_TYPE_LEGAL
     for customer in customers:
-        note = strip_phone_candidates(customer.get("note"))
+        recipient_location, location_review = resolve_allowed_recipient_location(customer)
+        cleaned_address, address_note = split_address_and_note(customer.get("address"))
+        note = "; ".join(
+            part
+            for part in [
+                strip_phone_candidates(customer.get("note")),
+                address_note,
+            ]
+            if part
+        )
         normalized_phone, phone_review = normalize_phone_list(
             clean_text(customer.get("phone")),
             clean_text(customer.get("note")),
         )
-        recipient_location, location_review = resolve_allowed_recipient_location(customer)
         recipient_address, branch_code_review = format_recipient_address(
-            customer.get("address"),
+            cleaned_address,
             recipient_location,
             sender["delivery_type"],
         )
