@@ -75,6 +75,7 @@ BOT_TOKEN=telegram_bot_token
 OPENAI_API_KEY=openai_api_key
 OPENAI_MODEL=gpt-4o-mini
 BATCH_CONCURRENCY=10
+ADMIN_IDS=123456789
 ```
 
 Botni ishga tushirish:
@@ -103,6 +104,16 @@ python main.py
 Bot long polling orqali ishlaydi, alohida webhook sozlash shart emas.
 
 Railway logida `BOT_TOKEN environment variable sozlanmagan` chiqsa, demak token hali Railway service variables ichiga qo'yilmagan. `.env` fayl GitHubga yuklanmaydi va Railway uni avtomatik ko'rmaydi.
+
+## Admin ruxsati
+
+`ADMIN_IDS` ichiga admin Telegram user ID yoziladi. Bir nechta admin bo'lsa vergul bilan ajrating:
+
+```env
+ADMIN_IDS=123456789,987654321
+```
+
+Yangi foydalanuvchi `/start` bosganda adminlarga ruxsat so'rovi boradi. Admin tasdiqlagan userlar `data/approved_users.json` faylida saqlanadi.
 
 P ustun (`Город-получатель`) uchun bot `Ферганская область, Учкуприкский район` kabi uzun format yozmaydi. U faqat ichki ro'yxatdagi справочник nomlaridan birini yozadi, masalan: `Учкуприк`, `Бука`, `Тайлак`, `Каракуль`, `Алмазар`.
 

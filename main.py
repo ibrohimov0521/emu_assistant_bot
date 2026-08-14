@@ -21,7 +21,9 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     Message,
+    ReplyKeyboardMarkup,
 )
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -33,6 +35,11 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+ADMIN_IDS = {
+    int(part.strip())
+    for part in os.getenv("ADMIN_IDS", "").split(",")
+    if part.strip().isdigit()
+}
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -40,6 +47,7 @@ TEMPLATE_DIR = BASE_DIR / "templates"
 TEMPLATE_PATH = TEMPLATE_DIR / "yangi_shablon.xlsx"
 BRANCH_CODES_PATH = TEMPLATE_DIR / "branch_codes.xlsx"
 EXCEL_PATH = DATA_DIR / "customers.xlsx"
+APPROVED_USERS_PATH = DATA_DIR / "approved_users.json"
 
 HEADERS = [
     "Номер",
@@ -79,11 +87,41 @@ branch_code_cache: dict[str, str] | None = None
 reply_locks: dict[int, asyncio.Lock] = {}
 last_success_notice_at: dict[int, float] = {}
 batch_states: dict[int, "BatchState"] = {}
+access_request_sent_at: dict[int, float] = {}
 
 SUCCESS_NOTICE_INTERVAL_SECONDS = 12
 BATCH_IDLE_SECONDS = 3
 BATCH_CONCURRENCY = max(1, int(os.getenv("BATCH_CONCURRENCY", "10")))
 BATCH_PROGRESS_EDIT_INTERVAL_SECONDS = 1.5
+ACCESS_REQUEST_INTERVAL_SECONDS = 60
+
+MENU_COLLECT = "Excel ga yig'ish"
+MENU_ARCHIVE = "Arxiv"
+MENU_SETTINGS = "Sozlamalar"
+MENU_BACK = "Orqaga"
+MENU_LEGAL = "Yuridik mijoz"
+MENU_PHYSICAL = "ФИЗ ЛИЦО"
+MENU_EXCEL_FILE = "Excel fayl"
+MENU_TEMPLATE_FILE = "Shablon"
+MENU_CLEAR = "Ro'yxatni tozalash"
+MENU_RESET_SETUP = "Jo'natuvchi sozlamalari"
+MENU_ACCESS_STATUS = "Ruxsat holati"
+MENU_TEXTS = {
+    MENU_COLLECT,
+    MENU_ARCHIVE,
+    MENU_SETTINGS,
+    MENU_BACK,
+    MENU_LEGAL,
+    MENU_PHYSICAL,
+    MENU_EXCEL_FILE,
+    MENU_TEMPLATE_FILE,
+    MENU_CLEAR,
+    MENU_RESET_SETUP,
+    MENU_ACCESS_STATUS,
+}
+
+CLIENT_TYPE_LEGAL = "legal"
+CLIENT_TYPE_PHYSICAL = "physical"
 
 
 @dataclass
@@ -101,6 +139,81 @@ class BatchState:
     items: list[BatchItem] = field(default_factory=list)
     task: asyncio.Task | None = None
     last_added_at: float = 0
+
+
+def load_approved_user_ids() -> set[int]:
+    if not APPROVED_USERS_PATH.exists():
+        return set()
+    try:
+        data = json.loads(APPROVED_USERS_PATH.read_text(encoding="utf-8"))
+    except Exception as error:
+        logger.warning("Approved users file could not be read: %s", error)
+        return set()
+    if not isinstance(data, list):
+        return set()
+    return {int(item) for item in data if str(item).isdigit()}
+
+
+def save_approved_user_ids(user_ids: set[int]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    APPROVED_USERS_PATH.write_text(
+        json.dumps(sorted(user_ids), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+approved_user_ids: set[int] = load_approved_user_ids()
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
+def has_bot_access(user_id: int) -> bool:
+    if not ADMIN_IDS:
+        return True
+    return is_admin(user_id) or user_id in approved_user_ids
+
+
+def main_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=MENU_COLLECT), KeyboardButton(text=MENU_ARCHIVE)],
+            [KeyboardButton(text=MENU_SETTINGS)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def collect_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=MENU_LEGAL), KeyboardButton(text=MENU_PHYSICAL)],
+            [KeyboardButton(text=MENU_BACK)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def archive_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=MENU_EXCEL_FILE), KeyboardButton(text=MENU_TEMPLATE_FILE)],
+            [KeyboardButton(text=MENU_CLEAR)],
+            [KeyboardButton(text=MENU_BACK)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def settings_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=MENU_RESET_SETUP), KeyboardButton(text=MENU_ACCESS_STATUS)],
+            [KeyboardButton(text=MENU_BACK)],
+        ],
+        resize_keyboard=True,
+    )
 
 
 SETUP_STEPS = [
@@ -1014,6 +1127,15 @@ async def safe_answer(message: Message, text: str, **kwargs: Any) -> Any:
                 await asyncio.sleep(error.retry_after + 1)
 
 
+async def safe_send_message(bot: Bot, chat_id: int, text: str, **kwargs: Any) -> Any:
+    async with chat_reply_lock(chat_id):
+        while True:
+            try:
+                return await bot.send_message(chat_id, text, **kwargs)
+            except TelegramRetryAfter as error:
+                await asyncio.sleep(error.retry_after + 1)
+
+
 async def safe_answer_document(message: Message, document: BufferedInputFile, **kwargs: Any) -> Any:
     async with chat_reply_lock(message.chat.id):
         while True:
@@ -1081,6 +1203,114 @@ async def maybe_send_success_notice(message: Message, count: int) -> None:
         f"{count} ta mijoz Excel faylga qo'shildi.\n"
         "Ko'p xabar yuborilganda bot javoblarni kamaytiradi. Faylni olish uchun /excel yuboring.",
     )
+
+
+def user_label(message: Message) -> str:
+    user = message.from_user
+    if user is None:
+        return f"chat_id={message.chat.id}"
+    name = " ".join(part for part in [user.first_name, user.last_name] if part)
+    username = f"@{user.username}" if user.username else "username yo'q"
+    return f"{name or 'Nomalum'} ({username}, id={user.id})"
+
+
+async def request_access(message: Message) -> None:
+    if not ADMIN_IDS:
+        return
+
+    user_id = message.from_user.id if message.from_user else message.chat.id
+    now = asyncio.get_running_loop().time()
+    last_sent = access_request_sent_at.get(user_id, 0)
+
+    if now - last_sent >= ACCESS_REQUEST_INTERVAL_SECONDS:
+        access_request_sent_at[user_id] = now
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="Ruxsat berish", callback_data=f"access:approve:{user_id}"),
+                    InlineKeyboardButton(text="Rad etish", callback_data=f"access:deny:{user_id}"),
+                ]
+            ]
+        )
+        for admin_id in ADMIN_IDS:
+            await safe_send_message(
+                message.bot,
+                admin_id,
+                "Botdan foydalanish uchun yangi so'rov:\n"
+                f"{user_label(message)}",
+                reply_markup=keyboard,
+            )
+
+    await safe_answer(
+        message,
+        "Sizga hali botdan foydalanish uchun ruxsat berilmagan.\n"
+        "Admin tasdiqlagandan keyin /start ni qayta bosing.",
+    )
+
+
+async def ensure_user_access(message: Message) -> bool:
+    user_id = message.from_user.id if message.from_user else message.chat.id
+    if has_bot_access(user_id):
+        return True
+    await request_access(message)
+    return False
+
+
+async def send_main_menu(message: Message, text: str | None = None) -> None:
+    await safe_answer(
+        message,
+        text
+        or (
+            "Asosiy menyu.\n\n"
+            "Excel ga yig'ish - yangi jo'natmalar ro'yxatini yig'ish.\n"
+            "Arxiv - tayyor Excel va shablon fayllar.\n"
+            "Sozlamalar - jo'natuvchi ma'lumotlari va ruxsat holati."
+        ),
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def access_callback_handler(callback: CallbackQuery) -> None:
+    data = callback.data or ""
+    parts = data.split(":", 2)
+    admin_id = callback.from_user.id
+
+    if len(parts) != 3 or parts[0] != "access":
+        await callback.answer()
+        return
+    if not is_admin(admin_id):
+        await callback.answer("Bu amal faqat admin uchun.", show_alert=True)
+        return
+    if not parts[2].isdigit():
+        await callback.answer("User ID noto'g'ri.", show_alert=True)
+        return
+
+    action = parts[1]
+    user_id = int(parts[2])
+    if action == "approve":
+        approved_user_ids.add(user_id)
+        save_approved_user_ids(approved_user_ids)
+        await callback.answer("Ruxsat berildi.")
+        if callback.message:
+            await callback.message.edit_text(f"Ruxsat berildi: {user_id}")
+        await safe_send_message(
+            callback.bot,
+            user_id,
+            "Ruxsat berildi.\n\n"
+            "Endi botdan foydalanishingiz mumkin. Boshlash uchun /start ni bosing.",
+        )
+        return
+
+    if action == "deny":
+        approved_user_ids.discard(user_id)
+        save_approved_user_ids(approved_user_ids)
+        await callback.answer("So'rov rad etildi.")
+        if callback.message:
+            await callback.message.edit_text(f"So'rov rad etildi: {user_id}")
+        await safe_send_message(callback.bot, user_id, "Botdan foydalanish so'rovingiz rad etildi.")
+        return
+
+    await callback.answer("Noma'lum amal.", show_alert=True)
 
 
 def normalize_cipher_prefix(value: str) -> str:
@@ -1230,8 +1460,10 @@ async def ask_setup_step(message_or_query: Message | CallbackQuery, step_index: 
 
 
 def setup_summary(session: dict[str, str]) -> str:
+    client_type = "Yuridik mijoz" if session.get("client_type") == CLIENT_TYPE_LEGAL else "ФИЗ ЛИЦО"
     return (
         "Jo'natuvchi ma'lumotlari saqlandi:\n"
+        f"Yo'nalish: {client_type}\n"
         f"Ism familiya: {session['sender_full_name']}\n"
         f"Telefon: {session['sender_phone']}\n"
         f"Manzil: {session['sender_address']}\n"
@@ -1246,17 +1478,53 @@ def setup_summary(session: dict[str, str]) -> str:
     )
 
 
-async def start_setup(message: Message, reset: bool = False) -> None:
+def legal_sender_defaults() -> dict[str, str]:
+    return {
+        "client_type": CLIENT_TYPE_LEGAL,
+        "sender_full_name": "",
+        "sender_phone": "",
+        "sender_address": "",
+        "sender_city_ru": "",
+    }
+
+
+async def start_setup(
+    message: Message,
+    reset: bool = False,
+    client_type: str = CLIENT_TYPE_PHYSICAL,
+    start_step: int = 0,
+    initial_data: dict[str, str] | None = None,
+) -> None:
     chat_id = message.chat.id
     if reset:
         sender_sessions.pop(chat_id, None)
-    setup_states[chat_id] = {"step": 0, "data": {}, "cleanup_messages": []}
+    setup_states[chat_id] = {
+        "step": start_step,
+        "data": initial_data or {"client_type": client_type},
+        "cleanup_messages": [],
+    }
+    intro_text = (
+        "Yuridik mijoz tanlandi.\n"
+        "Jo'natuvchi ma'lumotlari so'ralmaydi. Endi jo'natma sozlamalarini kiritamiz."
+        if client_type == CLIENT_TYPE_LEGAL
+        else "ФИЗ ЛИЦО tanlandi.\nExcel yaratishdan oldin jo'natuvchi ma'lumotlarini kiritamiz."
+    )
     intro_message = await safe_answer(
         message,
-        "Excel yaratishdan oldin jo'natuvchi ma'lumotlarini kiritamiz."
+        intro_text,
     )
     remember_setup_message(chat_id, intro_message)
-    await ask_setup_step(message, 0)
+    await ask_setup_step(message, start_step)
+
+
+async def start_legal_setup(message: Message, reset: bool = True) -> None:
+    await start_setup(
+        message,
+        reset=reset,
+        client_type=CLIENT_TYPE_LEGAL,
+        start_step=4,
+        initial_data=legal_sender_defaults(),
+    )
 
 
 async def save_setup_value_and_advance(
@@ -1680,48 +1948,41 @@ async def process_batch(chat_id: int) -> None:
 
 
 async def start_handler(message: Message) -> None:
-    await safe_answer(
+    if not await ensure_user_access(message):
+        return
+    await send_main_menu(
         message,
         "Assalomu alaykum!\n\n"
-        "Men jo'natuvchi ma'lumotlari asosida mijoz ma'lumotlarini matn yoki rasm ichidan ajratib, Excel shablonga yozib boraman.\n\n"
-        "Yuborishingiz mumkin:\n"
-        "- oddiy matn\n"
-        "- daftar rasmi\n"
-        "- skrinshot\n"
-        "- qo'lda yozilgan ma'lumot rasmi\n\n"
-        "Jo'natuvchi ma'lumotlarini qayta sozlash: /setup\n"
-        "Excel faylni olish: /excel\n"
-        "Shablon faylni olish: /shablon\n"
-        "Ro'yxatni tozalash: /clear\n"
-        "Yordam: /help"
+        "Bot mijoz ma'lumotlarini matn yoki rasm ichidan ajratib, Excel shablonga yozadi.\n"
+        "Quyidagi bo'limlardan birini tanlang.",
     )
-    if message.chat.id not in sender_sessions:
-        await start_setup(message)
 
 
 async def help_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
     await safe_answer(
         message,
-        "Foydalanish:\n\n"
-        "1. Mijoz ma'lumotlarini matn qilib yuboring yoki rasm jo'nating.\n"
-        "2. Agar jo'natuvchi ma'lumotlari kiritilmagan bo'lsa, bot avval ularni so'raydi.\n"
-        "3. Bot oluvchi ism, telefon, manzil, rus tilidagi hudud va izohlarni ajratadi.\n"
-        "4. Telefonlar 998XXXXXXXXX formatiga keltiriladi.\n"
-        "5. Shifrlar prefix bo'yicha ketadi: ABC1, ABC2, ABC3...\n\n"
-        "Komandalar:\n"
-        "/setup - jo'natuvchi ma'lumotlarini qayta kiritish\n"
-        "/excel - Excel faylni yuboradi\n"
-        "/shablon - Excel shablonni yuboradi\n"
-        "/clear - ro'yxatni tozalaydi\n"
-        "/help - yordam"
+        "Foydalanish yo'riqnomasi:\n\n"
+        "1. Excel ga yig'ish bo'limiga kiring.\n"
+        "2. Yuridik mijoz yoki ФИЗ ЛИЦО yo'nalishini tanlang.\n"
+        "3. Bot so'ragan sozlamalarga javob bering.\n"
+        "4. Mijoz ma'lumotlarini matn yoki rasm qilib yuboring.\n"
+        "5. Tayyor faylni Arxiv bo'limidan oling.\n\n"
+        "Har bir ichki bo'limda Orqaga tugmasi bor.",
+        reply_markup=main_menu_keyboard(),
     )
 
 
 async def setup_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
     await start_setup(message, reset=True)
 
 
 async def excel_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
     file_bytes = await get_excel_bytes()
     await safe_answer_document(
         message,
@@ -1731,6 +1992,8 @@ async def excel_handler(message: Message) -> None:
 
 
 async def template_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
     if not TEMPLATE_PATH.exists():
         await safe_answer(message, "Shablon fayl topilmadi.")
         return
@@ -1742,34 +2005,142 @@ async def template_handler(message: Message) -> None:
     )
 
 
-async def clear_handler(message: Message) -> None:
+async def show_collect_menu(message: Message) -> None:
+    await safe_answer(
+        message,
+        "Jo'natmalarni yig'ish bo'limi.\n\n"
+        "Yuridik mijoz - jo'natuvchi ma'lumotlari so'ralmaydi.\n"
+        "ФИЗ ЛИЦО - jo'natuvchi ma'lumotlari odatdagidek so'raladi.\n\n"
+        "Kerakli yo'nalishni tanlang.",
+        reply_markup=collect_menu_keyboard(),
+    )
+
+
+async def show_archive_menu(message: Message) -> None:
+    await safe_answer(
+        message,
+        "Arxiv bo'limi.\n\n"
+        "Excel fayl - yig'ilgan mijozlar ro'yxatini yuboradi.\n"
+        "Shablon - hozirgi Excel shablonni yuboradi.\n"
+        "Ro'yxatni tozalash - Excel ro'yxatini boshidan boshlaydi.",
+        reply_markup=archive_menu_keyboard(),
+    )
+
+
+async def show_settings_menu(message: Message) -> None:
+    await safe_answer(
+        message,
+        "Sozlamalar bo'limi.\n\n"
+        "Jo'natuvchi sozlamalari - ФИЗ ЛИЦО uchun ma'lumotlarni qayta kiritish.\n"
+        "Ruxsat holati - botdan foydalanish ruxsatini ko'rsatadi.",
+        reply_markup=settings_menu_keyboard(),
+    )
+
+
+async def handle_menu_message(message: Message) -> bool:
+    text = (message.text or "").strip()
+    if not text:
+        return False
+
+    if text == MENU_BACK:
+        setup_states.pop(message.chat.id, None)
+        await send_main_menu(message)
+        return True
+
+    if text == MENU_COLLECT:
+        await show_collect_menu(message)
+        return True
+
+    if text == MENU_ARCHIVE:
+        await show_archive_menu(message)
+        return True
+
+    if text == MENU_SETTINGS:
+        await show_settings_menu(message)
+        return True
+
+    if text == MENU_LEGAL:
+        await start_legal_setup(message, reset=True)
+        return True
+
+    if text == MENU_PHYSICAL:
+        await start_setup(message, reset=True, client_type=CLIENT_TYPE_PHYSICAL)
+        return True
+
+    if text == MENU_EXCEL_FILE:
+        await excel_handler(message)
+        return True
+
+    if text == MENU_TEMPLATE_FILE:
+        await template_handler(message)
+        return True
+
+    if text == MENU_CLEAR:
+        await clear_handler(message, start_next_setup=False)
+        return True
+
+    if text == MENU_RESET_SETUP:
+        await start_setup(message, reset=True, client_type=CLIENT_TYPE_PHYSICAL)
+        return True
+
+    if text == MENU_ACCESS_STATUS:
+        user_id = message.from_user.id if message.from_user else message.chat.id
+        status = "admin" if is_admin(user_id) else "ruxsat berilgan"
+        if not ADMIN_IDS:
+            status = "ruxsat tekshiruvi o'chirilgan"
+        await safe_answer(message, f"Ruxsat holati: {status}", reply_markup=settings_menu_keyboard())
+        return True
+
+    return False
+
+
+async def clear_handler(message: Message, start_next_setup: bool = True) -> None:
+    if not await ensure_user_access(message):
+        return
     async with excel_lock:
         reset_excel_file()
     sender_sessions.pop(message.chat.id, None)
     setup_states.pop(message.chat.id, None)
-    await safe_answer(message, "Ro'yxat tozalandi. Yangi Excel fayl shablondan tayyorlanadi.")
-    await start_setup(message)
+    await safe_answer(
+        message,
+        "Ro'yxat tozalandi. Yangi Excel fayl shablondan tayyorlanadi.",
+        reply_markup=archive_menu_keyboard() if not start_next_setup else None,
+    )
+    if start_next_setup:
+        await start_setup(message)
 
 
 async def text_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
     text = message.text or ""
+    if text.strip() in MENU_TEXTS:
+        setup_states.pop(message.chat.id, None)
+        await handle_menu_message(message)
+        return
+
     if await handle_setup_message(message):
         return
 
+    if await handle_menu_message(message):
+        return
+
     if message.chat.id not in sender_sessions:
-        await start_setup(message)
+        await show_collect_menu(message)
         return
 
     await enqueue_batch_item(BatchItem(kind="text", message=message, text=text))
 
 
 async def photo_handler(message: Message, bot: Bot) -> None:
+    if not await ensure_user_access(message):
+        return
     if message.chat.id in setup_states:
         await safe_answer(message, "Hozir jo'natuvchi ma'lumotlarini matn ko'rinishida kiriting.")
         return
 
     if message.chat.id not in sender_sessions:
-        await start_setup(message)
+        await show_collect_menu(message)
         return
 
     photo = message.photo[-1]
@@ -1785,12 +2156,14 @@ async def photo_handler(message: Message, bot: Bot) -> None:
 
 
 async def document_image_handler(message: Message, bot: Bot) -> None:
+    if not await ensure_user_access(message):
+        return
     if message.chat.id in setup_states:
         await safe_answer(message, "Hozir jo'natuvchi ma'lumotlarini matn ko'rinishida kiriting.")
         return
 
     if message.chat.id not in sender_sessions:
-        await start_setup(message)
+        await show_collect_menu(message)
         return
 
     document = message.document
@@ -1810,6 +2183,8 @@ async def document_image_handler(message: Message, bot: Bot) -> None:
 
 
 async def unsupported_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
     await safe_answer(message, "Matn yoki rasm yuboring. Yordam uchun /help buyrug'ini bosing.")
 
 
@@ -1817,7 +2192,7 @@ async def setup_bot_commands(bot: Bot) -> None:
     await bot.set_my_commands(
         [
             BotCommand(command="start", description="Botni ishga tushirish"),
-            BotCommand(command="setup", description="Jo'natuvchi ma'lumotlarini sozlash"),
+            BotCommand(command="setup", description="ФИЗ ЛИЦО jo'natuvchi sozlamalari"),
             BotCommand(command="help", description="Foydalanish bo'yicha yordam"),
             BotCommand(command="excel", description="Excel faylni yuborish"),
             BotCommand(command="shablon", description="Excel shablonni yuborish"),
@@ -1842,6 +2217,7 @@ async def main() -> None:
     dispatcher = Dispatcher()
     await setup_bot_commands(bot)
 
+    dispatcher.callback_query.register(access_callback_handler, F.data.startswith("access:"))
     dispatcher.callback_query.register(setup_callback_handler, F.data.startswith("setup:"))
     dispatcher.message.register(start_handler, Command("start"))
     dispatcher.message.register(setup_handler, Command("setup"))
