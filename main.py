@@ -100,20 +100,27 @@ BATCH_CONCURRENCY = max(1, int(os.getenv("BATCH_CONCURRENCY", "10")))
 BATCH_PROGRESS_EDIT_INTERVAL_SECONDS = 1.5
 ACCESS_REQUEST_INTERVAL_SECONDS = 60
 
-MENU_COLLECT = "Excel ga yig'ish"
-MENU_OFFICES = "Ofislar ro'yxati"
-MENU_CALCULATOR = "Kalkulyator"
-MENU_AI_ASSISTANT = "AI yordamchi"
-MENU_ARCHIVE = "Arxiv"
-MENU_SETTINGS = "Sozlamalar"
-MENU_BACK = "Orqaga"
-MENU_LEGAL = "Yuridik mijoz"
-MENU_PHYSICAL = "ФИЗ ЛИЦО"
-MENU_EXCEL_FILE = "Excel fayl"
-MENU_TEMPLATE_FILE = "Shablon"
-MENU_CLEAR = "Ro'yxatni tozalash"
-MENU_RESET_SETUP = "Jo'natuvchi sozlamalari"
-MENU_ACCESS_STATUS = "Ruxsat holati"
+MENU_COLLECT = "📥 Excel ga yig'ish"
+MENU_OFFICES = "🏢 Ofislar ro'yxati"
+MENU_CALCULATOR = "🧮 Kalkulyator"
+MENU_AI_ASSISTANT = "🤖 AI yordamchi"
+MENU_ARCHIVE = "🗂 Arxiv"
+MENU_SETTINGS = "⚙️ Sozlamalar"
+MENU_BACK = "⬅️ Orqaga"
+MENU_LEGAL = "🏢 Yuridik mijoz"
+MENU_PHYSICAL = "👤 ФИЗ ЛИЦО"
+MENU_EXCEL_FILE = "📊 Excel fayl"
+MENU_TEMPLATE_FILE = "📄 Shablon"
+MENU_CLEAR = "🧹 Ro'yxatni tozalash"
+MENU_RESET_SETUP = "✏️ Jo'natuvchi sozlamalari"
+MENU_ACCESS_STATUS = "🔐 Ruxsat holati"
+MENU_NEXT_PAGE = "➡️ Keyingi"
+MENU_PREV_PAGE = "⬅️ Oldingi"
+MENU_SEARCH = "🔎 Qidirish"
+MENU_CANCEL = "❌ Bekor qilish"
+MENU_SKIP = "⏭️ O'tkazib yuborish"
+MENU_DO_OFFICE = "🏢 ДО ОФИСА"
+MENU_TO_HOME = "🏠 НА ДОМ"
 MENU_TEXTS = {
     MENU_COLLECT,
     MENU_OFFICES,
@@ -129,6 +136,20 @@ MENU_TEXTS = {
     MENU_CLEAR,
     MENU_RESET_SETUP,
     MENU_ACCESS_STATUS,
+    "Excel ga yig'ish",
+    "Ofislar ro'yxati",
+    "Kalkulyator",
+    "AI yordamchi",
+    "Arxiv",
+    "Sozlamalar",
+    "Orqaga",
+    "Yuridik mijoz",
+    "ФИЗ ЛИЦО",
+    "Excel fayl",
+    "Shablon",
+    "Ro'yxatni tozalash",
+    "Jo'natuvchi sozlamalari",
+    "Ruxsat holati",
 }
 
 CLIENT_TYPE_LEGAL = "legal"
@@ -137,6 +158,24 @@ EMU_API_BASE_URL = "https://apiv1.emu.uz"
 TASHKENT_REGION_ID = 13
 TASHKENT_CITY_ID = 198
 EMU_CACHE_TTL_SECONDS = 3600
+OFFICES_PAGE_SIZE = 12
+
+MENU_ALIASES = {
+    "Excel ga yig'ish": MENU_COLLECT,
+    "Ofislar ro'yxati": MENU_OFFICES,
+    "Kalkulyator": MENU_CALCULATOR,
+    "AI yordamchi": MENU_AI_ASSISTANT,
+    "Arxiv": MENU_ARCHIVE,
+    "Sozlamalar": MENU_SETTINGS,
+    "Orqaga": MENU_BACK,
+    "Yuridik mijoz": MENU_LEGAL,
+    "ФИЗ ЛИЦО": MENU_PHYSICAL,
+    "Excel fayl": MENU_EXCEL_FILE,
+    "Shablon": MENU_TEMPLATE_FILE,
+    "Ro'yxatni tozalash": MENU_CLEAR,
+    "Jo'natuvchi sozlamalari": MENU_RESET_SETUP,
+    "Ruxsat holati": MENU_ACCESS_STATUS,
+}
 
 
 @dataclass
@@ -289,6 +328,62 @@ def chunked(items: list[Any], size: int) -> list[list[Any]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
+def reply_keyboard(labels: list[str], row_size: int = 2, add_back: bool = True) -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text=label) for label in row]
+        for row in chunked(labels, row_size)
+    ]
+    if add_back:
+        rows.append([KeyboardButton(text=MENU_BACK)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def remember_options(state: dict[str, Any], items: list[dict[str, Any]], locale: str = "UZ") -> list[str]:
+    labels: list[str] = []
+    options: dict[str, int] = {}
+    for item in items:
+        label = localized_name(item, locale)
+        if not label:
+            continue
+        labels.append(label)
+        options[label] = int(item.get("id") or 0)
+    state["options"] = options
+    return labels
+
+
+def selected_option_id(state: dict[str, Any], text: str) -> int | None:
+    options = state.get("options") or {}
+    if text in options:
+        return int(options[text])
+    normalized = clean_text(text).casefold()
+    for label, value in options.items():
+        if clean_text(label).casefold() == normalized:
+            return int(value)
+    return None
+
+
+def region_reply_keyboard(regions: list[dict[str, Any]], state: dict[str, Any]) -> ReplyKeyboardMarkup:
+    return reply_keyboard(remember_options(state, regions), row_size=2)
+
+
+def city_reply_keyboard(cities: list[dict[str, Any]], state: dict[str, Any]) -> ReplyKeyboardMarkup:
+    return reply_keyboard(remember_options(state, cities), row_size=2)
+
+
+def calculator_service_reply_keyboard() -> ReplyKeyboardMarkup:
+    return reply_keyboard([MENU_DO_OFFICE, MENU_TO_HOME], row_size=2)
+
+
+def offices_page_keyboard(page: int, total: int) -> ReplyKeyboardMarkup:
+    labels: list[str] = []
+    if page > 0:
+        labels.append(MENU_PREV_PAGE)
+    if (page + 1) * OFFICES_PAGE_SIZE < total:
+        labels.append(MENU_NEXT_PAGE)
+    labels.append(MENU_SEARCH)
+    return reply_keyboard(labels, row_size=2)
+
+
 def region_keyboard(regions: list[dict[str, Any]], prefix: str) -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(text=localized_name(region), callback_data=f"{prefix}:{region['id']}")
@@ -341,7 +436,7 @@ def format_branch_card(branch: dict[str, Any], index: int) -> str:
     )
 
 
-def format_branches_list(branches: list[dict[str, Any]], title: str, limit: int = 12) -> str:
+def format_branches_list(branches: list[dict[str, Any]], title: str, limit: int = OFFICES_PAGE_SIZE) -> str:
     if not branches:
         return f"{title}\n\nBu hudud uchun ofis topilmadi."
 
@@ -351,6 +446,52 @@ def format_branches_list(branches: list[dict[str, Any]], title: str, limit: int 
     if len(branches) > limit:
         lines.append(f"\nYana {len(branches) - limit} ta ofis bor. Aniq tuman bo'yicha qidirsak, ro'yxat qisqaradi.")
     return "\n\n".join(lines)
+
+
+def format_branches_page(branches: list[dict[str, Any]], title: str, page: int = 0) -> str:
+    if not branches:
+        return f"{title}\n\n😕 Bu hudud uchun ofis topilmadi."
+
+    total = len(branches)
+    page_count = max(1, (total + OFFICES_PAGE_SIZE - 1) // OFFICES_PAGE_SIZE)
+    page = max(0, min(page, page_count - 1))
+    start = page * OFFICES_PAGE_SIZE
+    visible = branches[start : start + OFFICES_PAGE_SIZE]
+
+    lines = [
+        f"🏢 {title}",
+        f"📍 Jami: {total} ta ofis",
+        f"📄 Sahifa: {page + 1}/{page_count}",
+        "",
+    ]
+    lines.extend(
+        format_branch_card(branch, index)
+        for index, branch in enumerate(visible, start=start + 1)
+    )
+    if page + 1 < page_count:
+        lines.append(f"\n➡️ Yana {total - (start + len(visible))} ta ofis bor. Pastdan {MENU_NEXT_PAGE} ni bosing.")
+    return "\n\n".join(lines)
+
+
+def filter_branches(branches: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    query = clean_text(query).casefold()
+    if not query:
+        return branches
+    return [
+        branch
+        for branch in branches
+        if query
+        in " ".join(
+            [
+                clean_text(branch.get("name")),
+                clean_text(branch.get("address")),
+                clean_text(branch.get("address_ref")),
+                clean_text(branch.get("city_name")),
+                clean_text(branch.get("region_name")),
+                clean_text(branch.get("phone")),
+            ]
+        ).casefold()
+    ]
 
 
 def format_calculator_result(
@@ -442,6 +583,16 @@ def settings_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=MENU_RESET_SETUP), KeyboardButton(text=MENU_ACCESS_STATUS)],
+            [KeyboardButton(text=MENU_BACK)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def collect_active_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=MENU_EXCEL_FILE), KeyboardButton(text=MENU_TEMPLATE_FILE)],
             [KeyboardButton(text=MENU_BACK)],
         ],
         resize_keyboard=True,
@@ -693,15 +844,15 @@ LOCATION_LIST_FOR_PROMPT = ", ".join(ALLOWED_RECIPIENT_LOCATIONS)
 
 BUTTON_SETUP_OPTIONS = {
     "delivery_type": [
-        ("ДО ОФИСА", "ДО ОФИСА"),
-        ("НА ДОМ", "НА ДОМ"),
+        (MENU_DO_OFFICE, "ДО ОФИСА"),
+        (MENU_TO_HOME, "НА ДОМ"),
     ],
     "payment_by_receiver": [
         ("✅ qo'yilsin", "✅ qo'yilsin"),
         ("⬜ qo'yilmasin", "⬜ qo'yilmasin"),
     ],
     "cipher_prefix": [
-        ("O'tkazib yuborish", ""),
+        (MENU_SKIP, ""),
     ],
 }
 
@@ -1710,11 +1861,20 @@ def validate_setup_value(chat_id: int, key: str, value: str) -> tuple[str | None
     if not value:
         return None, "Bu maydon bo'sh bo'lmasin. Iltimos, qayta kiriting."
 
-    if key in BUTTON_SETUP_OPTIONS and not (key == "cipher_prefix" and value):
-        allowed_values = {option_value for _label, option_value in BUTTON_SETUP_OPTIONS[key]}
-        if value not in allowed_values:
+    if key in BUTTON_SETUP_OPTIONS:
+        option_by_label = {
+            option_label: option_value
+            for option_label, option_value in BUTTON_SETUP_OPTIONS[key]
+        }
+        option_values = {option_value for _label, option_value in BUTTON_SETUP_OPTIONS[key]}
+        if value in option_by_label:
+            return option_by_label[value], None
+        if value in option_values:
+            return value, None
+        if key == "cipher_prefix" and value:
+            pass
+        else:
             return None, "Iltimos, pastdagi tugmalardan birini tanlang."
-        return value, None
 
     if key == "sender_phone":
         normalized, review = normalize_phone(value)
@@ -1744,22 +1904,12 @@ def validate_setup_value(chat_id: int, key: str, value: str) -> tuple[str | None
     return value, None
 
 
-def setup_step_keyboard(key: str) -> InlineKeyboardMarkup | None:
+def setup_step_keyboard(key: str) -> ReplyKeyboardMarkup | None:
     options = BUTTON_SETUP_OPTIONS.get(key)
     if not options:
-        return None
+        return reply_keyboard([], add_back=True)
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=label,
-                    callback_data=f"setup:{key}:{value}",
-                )
-            ]
-            for label, value in options
-        ]
-    )
+    return reply_keyboard([label for label, _value in options], row_size=2)
 
 
 async def ask_setup_step(message_or_query: Message | CallbackQuery, step_index: int) -> None:
@@ -1866,9 +2016,9 @@ async def save_setup_value_and_advance(
         summary = setup_summary(sender_sessions[chat_id])
         if isinstance(message_or_query, CallbackQuery):
             if message_or_query.message:
-                await safe_answer(message_or_query.message, summary)
+                await safe_answer(message_or_query.message, summary, reply_markup=collect_active_keyboard())
         else:
-            await safe_answer(message_or_query, summary)
+            await safe_answer(message_or_query, summary, reply_markup=collect_active_keyboard())
         return
 
     state["step"] = step_index
@@ -2350,7 +2500,8 @@ async def template_handler(message: Message) -> None:
 
 
 async def show_offices_menu(message: Message) -> None:
-    service_states.pop(message.chat.id, None)
+    state = {"mode": "offices", "step": "region"}
+    service_states[message.chat.id] = state
     try:
         regions = await get_emu_regions()
     except Exception as error:
@@ -2360,13 +2511,15 @@ async def show_offices_menu(message: Message) -> None:
 
     await safe_answer(
         message,
-        "Ofislar ro'yxati.\n\nOldin viloyatni tanlang, keyin shu viloyatdagi ofislar zamonaviy ro'yxat ko'rinishida chiqadi.",
-        reply_markup=region_keyboard(regions, "emu:office_region"),
+        "🏢 Ofislar ro'yxati\n\n"
+        "📍 Viloyatni tanlang. Keyin shu hududdagi ofislar sahifalab chiqadi.",
+        reply_markup=region_reply_keyboard(regions, state),
     )
 
 
 async def show_calculator_menu(message: Message) -> None:
-    service_states[message.chat.id] = {"mode": "calculator", "step": "sender_region"}
+    state = {"mode": "calculator", "step": "sender_region"}
+    service_states[message.chat.id] = state
     try:
         regions = await get_emu_regions()
     except Exception as error:
@@ -2376,8 +2529,9 @@ async def show_calculator_menu(message: Message) -> None:
 
     await safe_answer(
         message,
-        "Kalkulyator bo'limi.\n\nJo'natilish nuqtasining viloyatini tanlang.",
-        reply_markup=region_keyboard(regions, "emu:calc_sender_region"),
+        "🧮 Kalkulyator\n\n"
+        "📦 Jo'natilish nuqtasining viloyatini tanlang.",
+        reply_markup=region_reply_keyboard(regions, state),
     )
 
 
@@ -2390,11 +2544,8 @@ async def show_ai_assistant(message: Message) -> None:
         "- Samarqand ofislari qayerda?\n"
         "- Andijondan Toshkentga 2 kg qancha?\n"
         "- Do ofisa va Na dom farqi nima?\n\n"
-        "Chiqish uchun Orqaga tugmasini bosing.",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text=MENU_BACK)]],
-            resize_keyboard=True,
-        ),
+        f"Chiqish uchun {MENU_BACK} tugmasini bosing.",
+        reply_markup=reply_keyboard([], add_back=True),
     )
 
 
@@ -2560,7 +2711,7 @@ async def show_settings_menu(message: Message) -> None:
 
 
 async def handle_menu_message(message: Message) -> bool:
-    text = (message.text or "").strip()
+    text = MENU_ALIASES.get((message.text or "").strip(), (message.text or "").strip())
     if not text:
         return False
 
@@ -2714,6 +2865,19 @@ async def answer_ai_question(message: Message, question: str) -> None:
         await safe_answer(message, f"AI yordamchida xatolik: {error}")
 
 
+async def send_offices_page(message: Message, state: dict[str, Any], page: int = 0) -> None:
+    branches = state.get("filtered_branches") or state.get("branches") or []
+    title = state.get("title") or "Ofislar"
+    page_count = max(1, (len(branches) + OFFICES_PAGE_SIZE - 1) // OFFICES_PAGE_SIZE)
+    page = max(0, min(page, page_count - 1))
+    state["page"] = page
+    await safe_answer(
+        message,
+        format_branches_page(branches, title, page),
+        reply_markup=offices_page_keyboard(page, len(branches)),
+    )
+
+
 async def handle_service_text(message: Message) -> bool:
     state = service_states.get(message.chat.id)
     if not state:
@@ -2722,9 +2886,166 @@ async def handle_service_text(message: Message) -> bool:
     mode = state.get("mode")
     text = (message.text or "").strip()
 
+    if text == MENU_CANCEL:
+        service_states.pop(message.chat.id, None)
+        await send_main_menu(message, "❌ Amal bekor qilindi.")
+        return True
+
+    if mode == "offices":
+        step = state.get("step")
+        if step == "region":
+            region_id = selected_option_id(state, text)
+            if region_id is None:
+                await safe_answer(message, "📍 Pastdagi tugmalardan viloyatni tanlang.")
+                return True
+            try:
+                branches = await get_emu_branches(region_id=region_id)
+                regions = await get_emu_regions()
+                region = next((item for item in regions if int(item.get("id") or 0) == region_id), {})
+                state.update(
+                    {
+                        "step": "browser",
+                        "region_id": region_id,
+                        "branches": branches,
+                        "filtered_branches": branches,
+                        "title": f"{localized_name(region)} ofislari",
+                        "page": 0,
+                    }
+                )
+                await send_offices_page(message, state, 0)
+            except Exception as error:
+                logger.exception("Office list failed")
+                await safe_answer(message, f"⚠️ Ofislar ro'yxatini olishda xatolik: {error}")
+            return True
+
+        if step == "browser":
+            if text == MENU_NEXT_PAGE:
+                await send_offices_page(message, state, int(state.get("page") or 0) + 1)
+                return True
+            if text == MENU_PREV_PAGE:
+                await send_offices_page(message, state, int(state.get("page") or 0) - 1)
+                return True
+            if text == MENU_SEARCH:
+                state["step"] = "search"
+                await safe_answer(
+                    message,
+                    "🔎 Qidirish uchun tuman, filial nomi yoki manzil bo'lagini yozing.\n"
+                    "Masalan: Sergeli, Olmazor, Qoraqamish",
+                    reply_markup=reply_keyboard([MENU_CANCEL], row_size=1),
+                )
+                return True
+            await safe_answer(message, "Pastdagi tugmalardan amal tanlang.")
+            return True
+
+        if step == "search":
+            filtered = filter_branches(state.get("branches") or [], text)
+            state["filtered_branches"] = filtered
+            state["title"] = f"{state.get('title', 'Ofislar')} | qidiruv: {text}"
+            state["step"] = "browser"
+            await send_offices_page(message, state, 0)
+            return True
+
     if mode == "ai":
         await answer_ai_question(message, text)
         return True
+
+    if mode == "calculator" and state.get("step") != "weight":
+        step = state.get("step")
+        try:
+            if step == "sender_region":
+                region_id = selected_option_id(state, text)
+                if region_id is None:
+                    await safe_answer(message, "📍 Jo'natilish viloyatini pastdagi tugmalardan tanlang.")
+                    return True
+                state["sender_region_id"] = region_id
+                if region_id == TASHKENT_REGION_ID:
+                    state.update({"sender_city_id": TASHKENT_CITY_ID, "step": "receiver_region"})
+                    regions = await get_emu_regions()
+                    await safe_answer(
+                        message,
+                        "✅ Jo'natilish nuqtasi: Toshkent.\n\n📍 Endi olish nuqtasining viloyatini tanlang.",
+                        reply_markup=region_reply_keyboard(regions, state),
+                    )
+                    return True
+                cities = await get_emu_cities(region_id)
+                state["step"] = "sender_city"
+                await safe_answer(
+                    message,
+                    "🏙 Jo'natilish nuqtasining tuman/shahrini tanlang.",
+                    reply_markup=city_reply_keyboard(cities, state),
+                )
+                return True
+
+            if step == "sender_city":
+                city_id = selected_option_id(state, text)
+                if city_id is None:
+                    await safe_answer(message, "🏙 Tuman/shaharni pastdagi tugmalardan tanlang.")
+                    return True
+                state.update({"sender_city_id": city_id, "step": "receiver_region"})
+                regions = await get_emu_regions()
+                await safe_answer(
+                    message,
+                    "📍 Endi olish nuqtasining viloyatini tanlang.",
+                    reply_markup=region_reply_keyboard(regions, state),
+                )
+                return True
+
+            if step == "receiver_region":
+                region_id = selected_option_id(state, text)
+                if region_id is None:
+                    await safe_answer(message, "📍 Olish viloyatini pastdagi tugmalardan tanlang.")
+                    return True
+                state["receiver_region_id"] = region_id
+                if region_id == TASHKENT_REGION_ID:
+                    state.update({"receiver_city_id": TASHKENT_CITY_ID, "step": "service"})
+                    await safe_answer(
+                        message,
+                        "✅ Olish nuqtasi: Toshkent.\n\n🚚 Yetkazib berish turini tanlang.",
+                        reply_markup=calculator_service_reply_keyboard(),
+                    )
+                    return True
+                cities = await get_emu_cities(region_id)
+                state["step"] = "receiver_city"
+                await safe_answer(
+                    message,
+                    "🏙 Olish nuqtasining tuman/shahrini tanlang.",
+                    reply_markup=city_reply_keyboard(cities, state),
+                )
+                return True
+
+            if step == "receiver_city":
+                city_id = selected_option_id(state, text)
+                if city_id is None:
+                    await safe_answer(message, "🏙 Olish tuman/shahrini pastdagi tugmalardan tanlang.")
+                    return True
+                state.update({"receiver_city_id": city_id, "step": "service"})
+                await safe_answer(
+                    message,
+                    "🚚 Olish turi: ofisgachami yoki uygachami?",
+                    reply_markup=calculator_service_reply_keyboard(),
+                )
+                return True
+
+            if step == "service":
+                if text == MENU_DO_OFFICE or "ДО ОФИСА" in text:
+                    service_id = 1
+                elif text == MENU_TO_HOME or "НА ДОМ" in text:
+                    service_id = 3
+                else:
+                    await safe_answer(message, "🚚 Yetkazib berish turini pastdagi tugmalardan tanlang.")
+                    return True
+                state.update({"service_id": service_id, "step": "weight"})
+                await safe_answer(
+                    message,
+                    "⚖️ Jo'natmaning og'irligini kiriting.\n\n"
+                    "Agar gabaritda o'lchangan og'irligi kattaroq bo'lsa, shuni kiriting. Masalan: 1.5",
+                    reply_markup=reply_keyboard([], add_back=True),
+                )
+                return True
+        except Exception as error:
+            logger.exception("Calculator step failed")
+            await safe_answer(message, f"⚠️ Kalkulyator xatoligi: {error}")
+            return True
 
     if mode == "calculator" and state.get("step") == "weight":
         normalized = text.replace(",", ".")
@@ -2779,9 +3100,10 @@ async def text_handler(message: Message) -> None:
     if not await ensure_user_access(message):
         return
     text = message.text or ""
-    if text.strip() in MENU_TEXTS:
+    normalized_menu_text = MENU_ALIASES.get(text.strip(), text.strip())
+    if normalized_menu_text in MENU_TEXTS:
         setup_states.pop(message.chat.id, None)
-        if text.strip() != MENU_BACK:
+        if normalized_menu_text != MENU_BACK:
             service_states.pop(message.chat.id, None)
         await handle_menu_message(message)
         return
