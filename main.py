@@ -111,6 +111,7 @@ MENU_LEGAL = "🏢 Yuridik mijoz"
 MENU_PHYSICAL = "👤 ФИЗ ЛИЦО"
 MENU_EXCEL_FILE = "📊 Excel fayl"
 MENU_TEMPLATE_FILE = "📄 Shablon"
+MENU_CURRENT_TEMPLATES = "📑 Joriy shablonlar"
 MENU_CLEAR = "🧹 Ro'yxatni tozalash"
 MENU_RESET_SETUP = "✏️ Jo'natuvchi sozlamalari"
 MENU_ACCESS_STATUS = "🔐 Ruxsat holati"
@@ -133,6 +134,7 @@ MENU_TEXTS = {
     MENU_PHYSICAL,
     MENU_EXCEL_FILE,
     MENU_TEMPLATE_FILE,
+    MENU_CURRENT_TEMPLATES,
     MENU_CLEAR,
     MENU_RESET_SETUP,
     MENU_ACCESS_STATUS,
@@ -147,6 +149,7 @@ MENU_TEXTS = {
     "ФИЗ ЛИЦО",
     "Excel fayl",
     "Shablon",
+    "Joriy shablonlar",
     "Ro'yxatni tozalash",
     "Jo'natuvchi sozlamalari",
     "Ruxsat holati",
@@ -172,6 +175,7 @@ MENU_ALIASES = {
     "ФИЗ ЛИЦО": MENU_PHYSICAL,
     "Excel fayl": MENU_EXCEL_FILE,
     "Shablon": MENU_TEMPLATE_FILE,
+    "Joriy shablonlar": MENU_CURRENT_TEMPLATES,
     "Ro'yxatni tozalash": MENU_CLEAR,
     "Jo'natuvchi sozlamalari": MENU_RESET_SETUP,
     "Ruxsat holati": MENU_ACCESS_STATUS,
@@ -583,6 +587,7 @@ def settings_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=MENU_RESET_SETUP), KeyboardButton(text=MENU_ACCESS_STATUS)],
+            [KeyboardButton(text=MENU_CURRENT_TEMPLATES)],
             [KeyboardButton(text=MENU_BACK)],
         ],
         resize_keyboard=True,
@@ -2499,6 +2504,28 @@ async def template_handler(message: Message) -> None:
     )
 
 
+async def current_templates_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
+
+    template_files = sorted(TEMPLATE_DIR.glob("*.xlsx"))
+    if not template_files:
+        await safe_answer(message, "Joriy shablon fayllari topilmadi.", reply_markup=settings_menu_keyboard())
+        return
+
+    await safe_answer(
+        message,
+        f"📑 Joriy shablonlar yuborilmoqda: {len(template_files)} ta fayl.",
+        reply_markup=settings_menu_keyboard(),
+    )
+    for path in template_files:
+        await safe_answer_document(
+            message,
+            BufferedInputFile(path.read_bytes(), filename=path.name),
+            caption=f"📄 {path.name}",
+        )
+
+
 async def show_offices_menu(message: Message) -> None:
     state = {"mode": "offices", "step": "region"}
     service_states[message.chat.id] = state
@@ -2722,7 +2749,8 @@ async def show_settings_menu(message: Message) -> None:
         message,
         "Sozlamalar bo'limi.\n\n"
         "Jo'natuvchi sozlamalari - ФИЗ ЛИЦО uchun ma'lumotlarni qayta kiritish.\n"
-        "Ruxsat holati - botdan foydalanish ruxsatini ko'rsatadi.",
+        "Ruxsat holati - botdan foydalanish ruxsatini ko'rsatadi.\n"
+        "Joriy shablonlar - hozir ishlatilayotgan Excel shablon fayllarini yuboradi.",
         reply_markup=settings_menu_keyboard(),
     )
 
@@ -2776,6 +2804,10 @@ async def handle_menu_message(message: Message) -> bool:
 
     if text == MENU_TEMPLATE_FILE:
         await template_handler(message)
+        return True
+
+    if text == MENU_CURRENT_TEMPLATES:
+        await current_templates_handler(message)
         return True
 
     if text == MENU_CLEAR:
