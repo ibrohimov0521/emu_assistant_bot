@@ -300,6 +300,37 @@ async def get_emu_branches(region_id: int | None = None, city_id: int | None = N
     return await asyncio.to_thread(emu_api_get, "/api/v1/branches", params)
 
 
+async def get_all_emu_branches() -> list[dict[str, Any]]:
+    regions = await get_emu_regions()
+    tasks = [
+        asyncio.create_task(get_emu_branches(region_id=int(region.get("id") or 0)))
+        for region in regions
+        if int(region.get("id") or 0)
+    ]
+
+    all_branches: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for region, task in zip(regions, tasks):
+        try:
+            branches = await task
+        except Exception as error:
+            logger.warning("EMU branches for region %s failed: %s", region.get("id"), error)
+            continue
+
+        region_name = localized_name(region)
+        for branch in branches:
+            branch_id = clean_text(branch.get("id")) or f"{region.get('id')}:{clean_text(branch.get('name'))}"
+            if branch_id in seen_ids:
+                continue
+            seen_ids.add(branch_id)
+            enriched = dict(branch)
+            enriched["_region_id"] = region.get("id")
+            enriched["_region_name"] = region_name
+            all_branches.append(enriched)
+
+    return all_branches
+
+
 async def calculate_emu_delivery(
     sender_city_id: int,
     receiver_city_id: int,
@@ -497,6 +528,110 @@ def filter_branches(branches: list[dict[str, Any]], query: str) -> list[dict[str
             ]
         ).casefold()
     ]
+
+
+OFFICE_QUERY_STOP_WORDS = {
+    "ofis",
+    "ofislar",
+    "ofisbor",
+    "ofisi",
+    "filial",
+    "filiallar",
+    "nechta",
+    "qancha",
+    "qayerda",
+    "qanaqa",
+    "bormi",
+    "bor",
+    "yoq",
+    "yo'q",
+    "office",
+    "branch",
+}
+
+
+def compact_region_key(value: str) -> str:
+    text = clean_text(value).casefold()
+    text = re.sub(
+        r"\b(viloyati|viloyat|область|обл|respublikasi|respublika|республика|город|shahri|shahar)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return normalize_location_key(text)
+
+
+def branch_region_keys(branch: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for value in [
+        clean_text(branch.get("_region_name")),
+        clean_text(branch.get("region_name")),
+        clean_text(branch.get("city_name")),
+    ]:
+        key = compact_region_key(value)
+        if key:
+            keys.add(key)
+    return keys
+
+
+def branch_search_key(branch: dict[str, Any]) -> str:
+    values = [
+        clean_text(branch.get("name")),
+        clean_text(branch.get("address")),
+        clean_text(branch.get("address_ref")),
+        clean_text(branch.get("city_name")),
+        clean_text(branch.get("region_name")),
+        clean_text(branch.get("_region_name")),
+    ]
+    return normalize_location_key(" ".join(values))
+
+
+def office_query_words(question: str) -> set[str]:
+    words = set()
+    for word in re.findall(r"[\w'`‘’.-]+", question.casefold()):
+        normalized = normalize_location_key(word)
+        if len(normalized) >= 3 and normalized not in OFFICE_QUERY_STOP_WORDS:
+            words.add(normalized)
+    return words
+
+
+def find_matching_branches_for_question(branches: list[dict[str, Any]], question: str) -> list[dict[str, Any]]:
+    question_key = normalize_location_key(question)
+    words = office_query_words(question)
+    if not question_key and not words:
+        return []
+
+    region_matches = [
+        branch
+        for branch in branches
+        if any(region_key and region_key in question_key for region_key in branch_region_keys(branch))
+    ]
+    if region_matches:
+        return region_matches
+
+    matching = []
+    for branch in branches:
+        branch_key = branch_search_key(branch)
+        if any(word and (word in branch_key or branch_key in word) for word in words):
+            matching.append(branch)
+    return matching
+
+
+def format_office_count_answer(branches: list[dict[str, Any]]) -> str:
+    if not branches:
+        return "Bu hudud bo'yicha ofis topilmadi. Viloyat yoki tuman nomini aniqroq yozing."
+
+    names = [clean_text(branch.get("name")) for branch in branches if clean_text(branch.get("name"))]
+    unique_names = list(dict.fromkeys(names))
+    region_name = clean_text(branches[0].get("_region_name")) or "tanlangan hudud"
+    lines = [f"{region_name} bo'yicha {len(branches)} ta ofis bor."]
+    if unique_names:
+        lines.append("")
+        for index, name in enumerate(unique_names[:20], start=1):
+            lines.append(f"{index}. {name}")
+        if len(unique_names) > 20:
+            lines.append(f"... yana {len(unique_names) - 20} ta ofis bor.")
+    return "\n".join(lines)
 
 
 def format_calculator_result(
@@ -2955,34 +3090,14 @@ async def answer_ai_question(message: Message, question: str) -> None:
 
     try:
         if any(word in lowered for word in ["ofis", "filial", "office", "branch"]):
-            branches = await get_emu_branches()
-            query_words = {
-                word
-                for word in re.findall(r"[\w'`-]+", lowered)
-                if len(word) >= 4 and word not in {"ofis", "filial", "office", "branch", "qayerda"}
-            }
-            matching = [
-                branch
-                for branch in branches
-                if query_words
-                and query_words
-                & set(
-                    re.findall(
-                        r"[\w'`-]+",
-                        " ".join(
-                            [
-                                clean_text(branch.get("name")),
-                                clean_text(branch.get("address")),
-                                clean_text(branch.get("city_name")),
-                                clean_text(branch.get("region_name")),
-                            ]
-                        ).lower(),
-                    )
-                )
-            ]
+            branches = await get_all_emu_branches()
+            matching = find_matching_branches_for_question(branches, question)
             if not matching:
-                matching = branches[:10]
-            context_parts.append(format_branches_list(matching[:10], "Ofislar bo'yicha topilgan ma'lumot", limit=10))
+                matching = branches
+            if any(word in lowered for word in ["nechta", "qancha", "soni"]):
+                await safe_answer(message, format_office_count_answer(matching))
+                return
+            context_parts.append(format_branches_list(matching, "Ofislar bo'yicha topilgan ma'lumot", limit=20))
 
         if any(word in lowered for word in ["viloyat", "tuman", "shahar", "city", "region"]):
             cities = await get_emu_cities()
