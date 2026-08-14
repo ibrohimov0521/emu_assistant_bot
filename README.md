@@ -89,6 +89,7 @@ OPENAI_API_KEY=openai_api_key
 OPENAI_MODEL=gpt-4o-mini
 BATCH_CONCURRENCY=10
 ADMIN_IDS=6388458077
+EMU_DB_REFRESH_INTERVAL_DAYS=30
 ```
 
 Botni ishga tushirish:
@@ -109,6 +110,7 @@ python main.py
    - `OPENAI_MODEL` ixtiyoriy
    - `BATCH_CONCURRENCY` ixtiyoriy, bir vaqtda nechta xabar tahlil qilinishini belgilaydi
    - `ADMIN_IDS`
+   - `EMU_DB_REFRESH_INTERVAL_DAYS` ixtiyoriy, EMU lokal baza nechta kunda eskirgan hisoblanishini belgilaydi
 4. Start command:
 
 ```bash
@@ -128,6 +130,12 @@ ADMIN_IDS=6388458077
 ```
 
 Yangi foydalanuvchi `/start` bosganda adminlarga ruxsat so'rovi boradi. Admin tasdiqlagan userlar `data/approved_users.json` faylida saqlanadi.
+
+## EMU lokal baza
+
+Bot viloyatlar, shahar/tumanlar va ofislar ro'yxatini `data/emu_database.json` faylida saqlaydi. AI yordamchi va ofislar ro'yxati shu lokal bazadan foydalanadi, shuning uchun har bir savolda emu.uz API'ga bormaydi.
+
+Admin `Sozlamalar` bo'limidagi `EMU bazani yangilash` tugmasi orqali bazani emu.uz'dan qayta yangilashi mumkin. Baza yo'q bo'lsa yoki `EMU_DB_REFRESH_INTERVAL_DAYS` bo'yicha eskirgan bo'lsa, bot ishga tushganda ham avtomatik yangilanadi.
 
 P ustun (`Город-получатель`) uchun bot `Ферганская область, Учкуприкский район` kabi uzun format yozmaydi. U faqat ichki ro'yxatdagi справочник nomlaridan birini yozadi, masalan: `Учкуприк`, `Бука`, `Тайлак`, `Каракуль`, `Алмазар`.
 

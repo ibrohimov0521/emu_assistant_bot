@@ -10,6 +10,7 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime
 from difflib import get_close_matches
 from copy import copy
 from pathlib import Path
@@ -53,6 +54,7 @@ PHYSICAL_EXCEL_PATH = DATA_DIR / "customers.xlsx"
 LEGAL_EXCEL_PATH = DATA_DIR / "customers_legal.xlsx"
 EXCEL_PATH = PHYSICAL_EXCEL_PATH
 APPROVED_USERS_PATH = DATA_DIR / "approved_users.json"
+EMU_DATABASE_PATH = DATA_DIR / "emu_database.json"
 
 HEADERS = [
     "Номер",
@@ -94,6 +96,8 @@ batch_states: dict[int, "BatchState"] = {}
 access_request_sent_at: dict[int, float] = {}
 service_states: dict[int, dict[str, Any]] = {}
 emu_api_cache: dict[str, tuple[float, Any]] = {}
+emu_database_cache: dict[str, Any] | None = None
+emu_database_lock = asyncio.Lock()
 
 SUCCESS_NOTICE_INTERVAL_SECONDS = 12
 BATCH_IDLE_SECONDS = 3
@@ -116,6 +120,8 @@ MENU_CURRENT_TEMPLATES = "📑 Joriy shablonlar"
 MENU_CLEAR = "🧹 Ro'yxatni tozalash"
 MENU_RESET_SETUP = "✏️ Jo'natuvchi sozlamalari"
 MENU_ACCESS_STATUS = "🔐 Ruxsat holati"
+MENU_REFRESH_EMU_DB = "🔄 EMU bazani yangilash"
+MENU_EMU_DB_STATUS = "📚 EMU baza holati"
 MENU_NEXT_PAGE = "➡️ Keyingi"
 MENU_PREV_PAGE = "⬅️ Oldingi"
 MENU_SEARCH = "🔎 Qidirish"
@@ -139,6 +145,8 @@ MENU_TEXTS = {
     MENU_CLEAR,
     MENU_RESET_SETUP,
     MENU_ACCESS_STATUS,
+    MENU_REFRESH_EMU_DB,
+    MENU_EMU_DB_STATUS,
     "Excel ga yig'ish",
     "Ofislar ro'yxati",
     "Kalkulyator",
@@ -154,6 +162,8 @@ MENU_TEXTS = {
     "Ro'yxatni tozalash",
     "Jo'natuvchi sozlamalari",
     "Ruxsat holati",
+    "EMU bazani yangilash",
+    "EMU baza holati",
 }
 
 CLIENT_TYPE_LEGAL = "legal"
@@ -162,6 +172,7 @@ EMU_API_BASE_URL = "https://apiv1.emu.uz"
 TASHKENT_REGION_ID = 13
 TASHKENT_CITY_ID = 198
 EMU_CACHE_TTL_SECONDS = 3600
+EMU_DB_REFRESH_INTERVAL_SECONDS = int(os.getenv("EMU_DB_REFRESH_INTERVAL_DAYS", "30")) * 24 * 60 * 60
 OFFICES_PAGE_SIZE = 12
 
 MENU_ALIASES = {
@@ -180,6 +191,8 @@ MENU_ALIASES = {
     "Ro'yxatni tozalash": MENU_CLEAR,
     "Jo'natuvchi sozlamalari": MENU_RESET_SETUP,
     "Ruxsat holati": MENU_ACCESS_STATUS,
+    "EMU bazani yangilash": MENU_REFRESH_EMU_DB,
+    "EMU baza holati": MENU_EMU_DB_STATUS,
 }
 
 
@@ -222,6 +235,104 @@ def save_approved_user_ids(user_ids: set[int]) -> None:
 
 
 approved_user_ids: set[int] = load_approved_user_ids()
+
+
+def empty_emu_database() -> dict[str, Any]:
+    return {
+        "updated_at": 0,
+        "regions": [],
+        "cities": [],
+        "branches": [],
+        "calculator_cache": {},
+    }
+
+
+def load_emu_database() -> dict[str, Any]:
+    global emu_database_cache
+    if emu_database_cache is not None:
+        return emu_database_cache
+
+    if not EMU_DATABASE_PATH.exists():
+        emu_database_cache = empty_emu_database()
+        return emu_database_cache
+
+    try:
+        data = json.loads(EMU_DATABASE_PATH.read_text(encoding="utf-8"))
+    except Exception as error:
+        logger.warning("EMU database could not be read: %s", error)
+        data = {}
+
+    database = empty_emu_database()
+    if isinstance(data, dict):
+        database.update({key: value for key, value in data.items() if key in database})
+    if not isinstance(database.get("calculator_cache"), dict):
+        database["calculator_cache"] = {}
+    emu_database_cache = database
+    return database
+
+
+def save_emu_database(database: dict[str, Any]) -> None:
+    global emu_database_cache
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = EMU_DATABASE_PATH.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(database, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(EMU_DATABASE_PATH)
+    emu_database_cache = database
+
+
+def emu_database_age_seconds() -> float:
+    updated_at = float(load_emu_database().get("updated_at") or 0)
+    return max(0.0, time.time() - updated_at) if updated_at else float("inf")
+
+
+def emu_database_has_core_data() -> bool:
+    database = load_emu_database()
+    return bool(database.get("regions") and database.get("cities") and database.get("branches"))
+
+
+def emu_database_is_fresh() -> bool:
+    return emu_database_has_core_data() and emu_database_age_seconds() < EMU_DB_REFRESH_INTERVAL_SECONDS
+
+
+def int_value(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def region_id_from_item(item: dict[str, Any]) -> int:
+    for key in ("_region_id", "region_id"):
+        value = int_value(item.get(key))
+        if value:
+            return value
+    region = item.get("region")
+    if isinstance(region, dict):
+        return int_value(region.get("id"))
+    return 0
+
+
+def city_id_from_item(item: dict[str, Any]) -> int:
+    for key in ("city_id", "_city_id"):
+        value = int_value(item.get(key))
+        if value:
+            return value
+    city = item.get("city")
+    if isinstance(city, dict):
+        return int_value(city.get("id"))
+    return 0
+
+
+def calculator_cache_key(sender_city_id: int, receiver_city_id: int, weight: float, service_id: int | None) -> str:
+    return json.dumps(
+        {
+            "sender_city_id": sender_city_id,
+            "receiver_city_id": receiver_city_id,
+            "weight": round(float(weight), 3),
+            "service_id": service_id,
+        },
+        sort_keys=True,
+    )
 
 
 def emu_cache_key(path: str, params: dict[str, Any] | None = None) -> str:
@@ -286,49 +397,80 @@ def emu_api_post(path: str, payload: dict[str, Any], params: dict[str, Any] | No
         return json.loads(response.read().decode("utf-8"))
 
 
-async def get_emu_regions() -> list[dict[str, Any]]:
-    return await asyncio.to_thread(emu_api_get, "/api/v1/regions")
+def refresh_emu_database_sync() -> dict[str, Any]:
+    old_database = load_emu_database()
+    emu_api_cache.clear()
 
-
-async def get_emu_cities(region_id: int | None = None) -> list[dict[str, Any]]:
-    params = {"region_id": region_id} if region_id else None
-    return await asyncio.to_thread(emu_api_get, "/api/v1/cities", params)
-
-
-async def get_emu_branches(region_id: int | None = None, city_id: int | None = None) -> list[dict[str, Any]]:
-    params = {"region_id": region_id, "city_id": city_id}
-    return await asyncio.to_thread(emu_api_get, "/api/v1/branches", params)
-
-
-async def get_all_emu_branches() -> list[dict[str, Any]]:
-    regions = await get_emu_regions()
-    tasks = [
-        asyncio.create_task(get_emu_branches(region_id=int(region.get("id") or 0)))
-        for region in regions
-        if int(region.get("id") or 0)
-    ]
-
-    all_branches: list[dict[str, Any]] = []
+    regions = emu_api_get("/api/v1/regions")
+    cities = emu_api_get("/api/v1/cities")
+    branches: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    for region, task in zip(regions, tasks):
-        try:
-            branches = await task
-        except Exception as error:
-            logger.warning("EMU branches for region %s failed: %s", region.get("id"), error)
-            continue
 
+    for region in regions:
+        region_id = int_value(region.get("id"))
+        if not region_id:
+            continue
         region_name = localized_name(region)
-        for branch in branches:
-            branch_id = clean_text(branch.get("id")) or f"{region.get('id')}:{clean_text(branch.get('name'))}"
+        for branch in emu_api_get("/api/v1/branches", {"region_id": region_id}):
+            branch_id = clean_text(branch.get("id")) or f"{region_id}:{clean_text(branch.get('name'))}"
             if branch_id in seen_ids:
                 continue
             seen_ids.add(branch_id)
             enriched = dict(branch)
-            enriched["_region_id"] = region.get("id")
+            enriched["_region_id"] = region_id
             enriched["_region_name"] = region_name
-            all_branches.append(enriched)
+            branches.append(enriched)
 
-    return all_branches
+    database = {
+        "updated_at": time.time(),
+        "regions": regions,
+        "cities": cities,
+        "branches": branches,
+        "calculator_cache": old_database.get("calculator_cache") if isinstance(old_database.get("calculator_cache"), dict) else {},
+    }
+    save_emu_database(database)
+    return database
+
+
+async def refresh_emu_database() -> dict[str, Any]:
+    async with emu_database_lock:
+        return await asyncio.to_thread(refresh_emu_database_sync)
+
+
+async def ensure_emu_database() -> dict[str, Any]:
+    if emu_database_has_core_data():
+        return load_emu_database()
+    return await refresh_emu_database()
+
+
+async def get_emu_regions() -> list[dict[str, Any]]:
+    database = await ensure_emu_database()
+    return list(database.get("regions") or [])
+
+
+async def get_emu_cities(region_id: int | None = None) -> list[dict[str, Any]]:
+    database = await ensure_emu_database()
+    cities = list(database.get("cities") or [])
+    if region_id:
+        cities = [city for city in cities if region_id_from_item(city) == int(region_id)]
+    return cities
+
+
+async def get_emu_branches(region_id: int | None = None, city_id: int | None = None) -> list[dict[str, Any]]:
+    database = await ensure_emu_database()
+    branches = list(database.get("branches") or [])
+    if region_id:
+        branches = [branch for branch in branches if region_id_from_item(branch) == int(region_id)]
+    if city_id:
+        city_filtered = [branch for branch in branches if city_id_from_item(branch) == int(city_id)]
+        if city_filtered:
+            branches = city_filtered
+    return branches
+
+
+async def get_all_emu_branches() -> list[dict[str, Any]]:
+    database = await ensure_emu_database()
+    return list(database.get("branches") or [])
 
 
 async def calculate_emu_delivery(
@@ -337,6 +479,13 @@ async def calculate_emu_delivery(
     weight: float,
     service_id: int | None = None,
 ) -> dict[str, Any]:
+    database = await ensure_emu_database()
+    cache_key = calculator_cache_key(sender_city_id, receiver_city_id, weight, service_id)
+    calculator_cache = database.setdefault("calculator_cache", {})
+    cached_result = calculator_cache.get(cache_key) if isinstance(calculator_cache, dict) else None
+    if isinstance(cached_result, dict) and cached_result.get("result"):
+        return cached_result["result"]
+
     payload = {
         "sender_city_id": sender_city_id,
         "receiver_city_id": receiver_city_id,
@@ -350,7 +499,13 @@ async def calculate_emu_delivery(
             }
         ],
     }
-    return await asyncio.to_thread(emu_api_post, "/api/v1/calculator", payload, {"platform": "app"})
+    result = await asyncio.to_thread(emu_api_post, "/api/v1/calculator", payload, {"platform": "app"})
+    async with emu_database_lock:
+        database = load_emu_database()
+        calculator_cache = database.setdefault("calculator_cache", {})
+        calculator_cache[cache_key] = {"updated_at": time.time(), "result": result}
+        save_emu_database(database)
+    return result
 
 
 def localized_name(item: dict[str, Any], locale: str = "UZ") -> str:
@@ -723,6 +878,7 @@ def settings_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=MENU_RESET_SETUP), KeyboardButton(text=MENU_ACCESS_STATUS)],
+            [KeyboardButton(text=MENU_REFRESH_EMU_DB), KeyboardButton(text=MENU_EMU_DB_STATUS)],
             [KeyboardButton(text=MENU_CURRENT_TEMPLATES)],
             [KeyboardButton(text=MENU_BACK)],
         ],
@@ -2781,6 +2937,58 @@ async def current_templates_handler(message: Message) -> None:
         )
 
 
+def format_emu_database_status() -> str:
+    database = load_emu_database()
+    updated_at = float(database.get("updated_at") or 0)
+    if updated_at:
+        updated_text = datetime.fromtimestamp(updated_at).strftime("%Y-%m-%d %H:%M")
+        age_days = emu_database_age_seconds() / 86400
+        age_text = f"{age_days:.1f} kun oldin"
+    else:
+        updated_text = "hali yangilanmagan"
+        age_text = "noma'lum"
+
+    calculator_cache = database.get("calculator_cache")
+    calculator_count = len(calculator_cache) if isinstance(calculator_cache, dict) else 0
+    return (
+        "📚 EMU baza holati\n\n"
+        f"Viloyatlar: {len(database.get('regions') or [])}\n"
+        f"Shahar/tumanlar: {len(database.get('cities') or [])}\n"
+        f"Ofislar: {len(database.get('branches') or [])}\n"
+        f"Kalkulyator cache: {calculator_count}\n"
+        f"Oxirgi yangilanish: {updated_text}\n"
+        f"Yoshi: {age_text}"
+    )
+
+
+async def refresh_emu_database_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
+    user_id = message.from_user.id if message.from_user else message.chat.id
+    if not is_admin(user_id):
+        await safe_answer(message, "Bu amal faqat admin uchun.", reply_markup=settings_menu_keyboard())
+        return
+
+    status_message = await safe_answer(
+        message,
+        "🔄 EMU bazasi yangilanmoqda...\n\n"
+        "Bu jarayonda bot emu.uz API'dan viloyat, tuman/shahar va ofislar ro'yxatini qayta oladi.",
+        reply_markup=settings_menu_keyboard(),
+    )
+    try:
+        database = await refresh_emu_database()
+        await safe_edit_text(
+            status_message,
+            "✅ EMU bazasi yangilandi.\n\n"
+            f"Viloyatlar: {len(database.get('regions') or [])}\n"
+            f"Shahar/tumanlar: {len(database.get('cities') or [])}\n"
+            f"Ofislar: {len(database.get('branches') or [])}",
+        )
+    except Exception as error:
+        logger.exception("EMU database refresh failed")
+        await safe_edit_text(status_message, f"⚠️ EMU bazani yangilashda xatolik: {error}")
+
+
 async def show_offices_menu(message: Message) -> None:
     state = {"mode": "offices", "step": "region"}
     service_states[message.chat.id] = state
@@ -3005,7 +3213,8 @@ async def show_settings_menu(message: Message) -> None:
         "Sozlamalar bo'limi.\n\n"
         "Jo'natuvchi sozlamalari - ФИЗ ЛИЦО uchun ma'lumotlarni qayta kiritish.\n"
         "Ruxsat holati - botdan foydalanish ruxsatini ko'rsatadi.\n"
-        "Joriy shablonlar - hozir ishlatilayotgan Excel shablon fayllarini yuboradi.",
+        "Joriy shablonlar - hozir ishlatilayotgan Excel shablon fayllarini yuboradi.\n"
+        "EMU bazani yangilash - admin uchun, emu.uz'dan yangi filial va shahar ma'lumotlarini oladi.",
         reply_markup=settings_menu_keyboard(),
     )
 
@@ -3079,6 +3288,14 @@ async def handle_menu_message(message: Message) -> bool:
         if not ADMIN_IDS:
             status = "ruxsat tekshiruvi o'chirilgan"
         await safe_answer(message, f"Ruxsat holati: {status}", reply_markup=settings_menu_keyboard())
+        return True
+
+    if text == MENU_EMU_DB_STATUS:
+        await safe_answer(message, format_emu_database_status(), reply_markup=settings_menu_keyboard())
+        return True
+
+    if text == MENU_REFRESH_EMU_DB:
+        await refresh_emu_database_handler(message)
         return True
 
     return False
@@ -3493,6 +3710,9 @@ async def main() -> None:
 
     ensure_excel_file(CLIENT_TYPE_PHYSICAL)
     ensure_excel_file(CLIENT_TYPE_LEGAL)
+    if not emu_database_has_core_data() or not emu_database_is_fresh():
+        logger.info("EMU local database is missing or stale, refreshing from API")
+        await refresh_emu_database()
 
     bot = Bot(token=BOT_TOKEN)
     dispatcher = Dispatcher()
