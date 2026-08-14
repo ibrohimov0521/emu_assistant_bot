@@ -463,6 +463,21 @@ async def get_emu_branches(region_id: int | None = None, city_id: int | None = N
         branches = [branch for branch in branches if region_id_from_item(branch) == int(region_id)]
     if city_id:
         city_filtered = [branch for branch in branches if city_id_from_item(branch) == int(city_id)]
+        if not city_filtered:
+            cities = list(database.get("cities") or [])
+            city = next((item for item in cities if int_value(item.get("id")) == int(city_id)), None)
+            if city:
+                city_keys = city_search_keys(city)
+                city_filtered = [
+                    branch
+                    for branch in branches
+                    if city_keys
+                    & {
+                        compact_region_key(clean_text(branch.get("city_name"))),
+                        compact_region_key(clean_text(branch.get("name"))),
+                        compact_region_key(clean_text(branch.get("address"))),
+                    }
+                ]
         branches = city_filtered
     return branches
 
@@ -743,7 +758,7 @@ def branch_search_key(branch: dict[str, Any]) -> str:
 def office_query_words(question: str) -> set[str]:
     words = set()
     for word in re.findall(r"[\w'`‘’.-]+", question.casefold()):
-        normalized = normalize_location_key(word)
+        normalized = strip_place_suffix(word)
         if len(normalized) >= 3 and normalized not in OFFICE_QUERY_STOP_WORDS:
             words.add(normalized)
     return words
@@ -786,6 +801,142 @@ def format_office_count_answer(branches: list[dict[str, Any]]) -> str:
         if len(unique_names) > 20:
             lines.append(f"... yana {len(unique_names) - 20} ta ofis bor.")
     return "\n".join(lines)
+
+
+PLACE_SUFFIXES = ("gacha", "dan", "danmi", "ga", "da", "ni", "ning", "mi")
+
+
+def city_search_keys(city: dict[str, Any]) -> set[str]:
+    values = [
+        clean_text(city.get("name")),
+        clean_text(city.get("extra_name")),
+        localized_name(city, "UZ"),
+        localized_name(city, "RU"),
+        localized_name(city, "EN"),
+    ]
+    keys: set[str] = set()
+    for value in values:
+        key = compact_region_key(value)
+        if key:
+            keys.add(key)
+        simplified = re.sub(
+            r"\b(tumani|shahri|shahar|district|city|район|город|г)\b",
+            " ",
+            value.casefold(),
+            flags=re.IGNORECASE,
+        )
+        simplified_key = compact_region_key(simplified)
+        if simplified_key:
+            keys.add(simplified_key)
+    return keys
+
+
+def strip_place_suffix(value: str) -> str:
+    key = normalize_location_key(value)
+    for suffix in PLACE_SUFFIXES:
+        if key.endswith(suffix) and len(key) > len(suffix) + 2:
+            return key[: -len(suffix)]
+    return key
+
+
+def find_city_by_text(text: str, cities: list[dict[str, Any]]) -> dict[str, Any] | None:
+    query_key = normalize_location_key(text)
+    if not query_key:
+        return None
+
+    exact_matches: list[tuple[int, dict[str, Any]]] = []
+    key_to_city: dict[str, dict[str, Any]] = {}
+    for city in cities:
+        for key in city_search_keys(city):
+            key_to_city.setdefault(key, city)
+            if key and key in query_key:
+                exact_matches.append((len(key), city))
+
+    if exact_matches:
+        exact_matches.sort(key=lambda item: item[0], reverse=True)
+        return exact_matches[0][1]
+
+    words = [strip_place_suffix(word) for word in re.findall(r"[\w'`‘’.-]+", text.casefold())]
+    words = [word for word in words if len(word) >= 4]
+    all_keys = list(key_to_city)
+    for word in words:
+        matches = get_close_matches(word, all_keys, n=1, cutoff=0.82)
+        if matches:
+            return key_to_city[matches[0]]
+    return None
+
+
+def parse_weight_from_question(question: str) -> float | None:
+    match = re.search(r"(?i)(\d+(?:[.,]\d+)?)\s*(?:kg|кг|kilogram|кило)\b", question)
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", "."))
+    except ValueError:
+        return None
+
+
+def ai_service_id_from_question(question: str, sender: dict[str, str] | None = None) -> int:
+    lowered = question.casefold()
+    if any(word in lowered for word in ["uyga", "uygacha", "na dom", "на дом", "дом"]):
+        return 3
+    if any(word in lowered for word in ["ofis", "ofisgacha", "pochta", "до офиса", "do ofisa"]):
+        return 1
+    if sender and sender.get("delivery_type") == "НА ДОМ":
+        return 3
+    return 1
+
+
+def ai_origin_destination_text(question: str) -> tuple[str, str]:
+    lowered = question.casefold()
+    match = re.search(r"(.+?)\s+dan\s+(.+?)(?:\s+ga|\s+gacha|\s|$)", lowered)
+    if match:
+        return match.group(1), match.group(2)
+    match = re.search(r"([\w'`‘’.-]+)dan\s+(.+?)(?:\s|$)", lowered)
+    if match:
+        return match.group(1), match.group(2)
+    match = re.search(r"(.+?)\s+дан\s+(.+?)(?:\s+га|\s|$)", lowered)
+    if match:
+        return match.group(1), match.group(2)
+    return "", question
+
+
+async def calculate_from_ai_question(message: Message, question: str) -> str | None:
+    weight = parse_weight_from_question(question)
+    if weight is None:
+        return None
+
+    cities = await get_emu_cities()
+    sender = sender_sessions.get(message.chat.id)
+    origin_text, destination_text = ai_origin_destination_text(question)
+
+    sender_city = find_city_by_text(origin_text, cities) if origin_text else None
+    if sender_city is None and sender:
+        sender_city = find_city_by_text(sender.get("sender_city_ru", ""), cities)
+    if sender_city is None:
+        return (
+            "🧮 Hisoblash uchun jo'natilish nuqtasi yetishmayapti.\n\n"
+            "Masalan:\n"
+            "Toshkentdan Paxtaobodga 1 kg pochta qancha?"
+        )
+
+    receiver_city = find_city_by_text(destination_text, cities)
+    if receiver_city is None:
+        return (
+            "🧮 Olish nuqtasini aniqlay olmadim.\n\n"
+            "Viloyat yoki tuman nomini aniqroq yozing. Masalan:\n"
+            "Toshkentdan Paxtaobodga 1 kg pochta qancha?"
+        )
+
+    service_id = ai_service_id_from_question(question, sender)
+    result = await calculate_emu_delivery(
+        int(sender_city["id"]),
+        int(receiver_city["id"]),
+        weight,
+        service_id,
+    )
+    receiver_branches = await get_emu_branches(city_id=int(receiver_city["id"]))
+    return format_calculator_result(result, service_id, receiver_branches)
 
 
 def format_calculator_result(
@@ -3305,6 +3456,12 @@ async def answer_ai_question(message: Message, question: str) -> None:
     context_parts: list[str] = []
 
     try:
+        if any(word in lowered for word in ["narx", "kalk", "qancha", "kg", "кг", "sum", "so'm", "som"]):
+            calculator_answer = await calculate_from_ai_question(message, question)
+            if calculator_answer:
+                await safe_answer(message, calculator_answer)
+                return
+
         if any(word in lowered for word in ["ofis", "filial", "office", "branch"]):
             branches = await get_all_emu_branches()
             matching = find_matching_branches_for_question(branches, question)
@@ -3312,6 +3469,9 @@ async def answer_ai_question(message: Message, question: str) -> None:
                 matching = branches
             if any(word in lowered for word in ["nechta", "qancha", "soni"]):
                 await safe_answer(message, format_office_count_answer(matching))
+                return
+            if any(word in lowered for word in ["bormi", "qayerda", "manzil", "telefon", "ish vaqti"]):
+                await safe_answer(message, format_branches_list(matching, "Ofislar bo'yicha topilgan ma'lumot", limit=10))
                 return
             context_parts.append(format_branches_list(matching, "Ofislar bo'yicha topilgan ma'lumot", limit=20))
 
@@ -3348,8 +3508,9 @@ async def answer_ai_question(message: Message, question: str) -> None:
                     "role": "system",
                     "content": (
                         "Siz EMU botining yordamchisisiz. Faqat berilgan kontekstga tayanib, "
-                        "qisqa, amaliy va o'zbek tilida javob bering. Agar ma'lumot yetmasa, "
-                        "qaysi bo'limdan foydalanish kerakligini ayting."
+                        "qisqa, amaliy va o'zbek tilida javob bering. Javobni abzastlarga ajrating: "
+                        "asosiy xulosa, keyin kerak bo'lsa punktli ro'yxat. Har bir fakt alohida qatorda bo'lsin. "
+                        "Agar ma'lumot yetmasa, qaysi bo'limdan foydalanish kerakligini ayting."
                     ),
                 },
                 {
@@ -3617,6 +3778,9 @@ async def text_handler(message: Message) -> None:
         return
 
     if message.chat.id not in sender_sessions:
+        if any(word in normalized_menu_text.casefold() for word in ["qancha", "narx", "kg", "кг", "so'm", "som"]):
+            await answer_ai_question(message, text)
+            return
         await show_collect_menu(message)
         return
 
