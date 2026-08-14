@@ -242,10 +242,6 @@ SETUP_STEPS = [
         "Yetkazib berish turini tanlang.",
     ),
     (
-        "package_code",
-        "Упаковка turini tanlang.",
-    ),
-    (
         "payment_by_receiver",
         "Оплата получателем bo'ladimi?",
     ),
@@ -469,13 +465,8 @@ BUTTON_SETUP_OPTIONS = {
         ("НА ДОМ", "НА ДОМ"),
     ],
     "payment_by_receiver": [
-        ("True", "True"),
-        ("False", "False"),
-    ],
-    "package_code": [
-        ("Пакет L", "794"),
-        ("Пакет M", "498"),
-        ("O'tkazib yuborish", ""),
+        ("✅ qo'yilsin", "✅ qo'yilsin"),
+        ("⬜ qo'yilmasin", "⬜ qo'yilmasin"),
     ],
     "cipher_prefix": [
         ("O'tkazib yuborish", ""),
@@ -1375,7 +1366,7 @@ def is_cipher_prefix_available(prefix: str) -> bool:
 
 def validate_setup_value(chat_id: int, key: str, value: str) -> tuple[str | None, str | None]:
     value = clean_text(value)
-    if not value and key in {"cipher_prefix", "package_code"}:
+    if not value and key in {"cipher_prefix"}:
         return "", None
     if not value:
         return None, "Bu maydon bo'sh bo'lmasin. Iltimos, qayta kiriting."
@@ -1404,12 +1395,6 @@ def validate_setup_value(chat_id: int, key: str, value: str) -> tuple[str | None
         if not is_cipher_prefix_available(prefix):
             return None, f"{prefix} shifri oldin ishlatilgan. Boshqa prefix kiriting."
         return prefix, None
-
-    if key == "payment_by_receiver":
-        parsed = parse_bool(value)
-        if parsed is None:
-            return None, "Faqat True yoki False deb yozing."
-        return parsed, None
 
     if key == "places_count":
         digits = re.sub(r"\D", "", value)
@@ -1470,7 +1455,6 @@ def setup_summary(session: dict[str, str]) -> str:
         f"Shahar: {session['sender_city_ru']}\n"
         f"Shifr: {session['cipher_prefix'] + '1, ' + session['cipher_prefix'] + '2, ...' if session['cipher_prefix'] else 'yoq'}\n"
         f"Yetkazib berish turi: {session['delivery_type']}\n"
-        f"Код упаковке: {session['package_code'] if session['package_code'] else 'yoq'}\n"
         f"Оплата получателем: {session['payment_by_receiver']}\n"
         f"Og'irlik: {session['parcel_weight']}\n"
         f"Количество мест: {session['places_count']}\n\n"
@@ -1645,8 +1629,8 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
                 sender["sender_city_ru"],
                 recipient_location,
                 sender["payment_by_receiver"],
-                "Упаковка" if sender.get("package_code") else "",
-                sender["package_code"],
+                "",
+                "",
                 review,
             ]
         )
