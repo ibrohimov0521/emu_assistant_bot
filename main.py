@@ -445,7 +445,7 @@ async def ensure_emu_database() -> dict[str, Any]:
 
 async def get_emu_regions() -> list[dict[str, Any]]:
     database = await ensure_emu_database()
-    return list(database.get("regions") or [])
+    return sort_emu_regions(list(database.get("regions") or []))
 
 
 async def get_emu_cities(region_id: int | None = None) -> list[dict[str, Any]]:
@@ -453,7 +453,7 @@ async def get_emu_cities(region_id: int | None = None) -> list[dict[str, Any]]:
     cities = list(database.get("cities") or [])
     if region_id:
         cities = [city for city in cities if region_id_from_item(city) == int(region_id)]
-    return cities
+    return sort_emu_cities(cities)
 
 
 async def get_emu_branches(region_id: int | None = None, city_id: int | None = None) -> list[dict[str, Any]]:
@@ -481,12 +481,12 @@ async def get_emu_branches(region_id: int | None = None, city_id: int | None = N
                     }
                 ]
         branches = city_filtered
-    return branches
+    return sort_emu_branches(branches)
 
 
 async def get_all_emu_branches() -> list[dict[str, Any]]:
     database = await ensure_emu_database()
-    return list(database.get("branches") or [])
+    return sort_emu_branches(list(database.get("branches") or []))
 
 
 async def calculate_emu_delivery(
@@ -529,6 +529,59 @@ def localized_name(item: dict[str, Any], locale: str = "UZ") -> str:
     if isinstance(i18n, dict):
         return clean_text(i18n.get(locale)) or clean_text(i18n.get("UZ")) or clean_text(item.get("name"))
     return clean_text(item.get("name"))
+
+
+def alpha_key(value: str) -> str:
+    text = clean_text(value).casefold()
+    replacements = {
+        "o‘": "o",
+        "o'": "o",
+        "g‘": "g",
+        "g'": "g",
+        "ʻ": "",
+        "‘": "",
+        "ʼ": "",
+        "`": "",
+        "sh": "s~h",
+        "ch": "c~h",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def region_sort_key(region: dict[str, Any]) -> tuple[int, str]:
+    name = localized_name(region)
+    normalized = alpha_key(name)
+    if int_value(region.get("id")) == TASHKENT_REGION_ID or normalized == "toshkent":
+        return (0, normalized)
+    return (1, normalized)
+
+
+def city_sort_key(city: dict[str, Any]) -> tuple[int, str]:
+    if int_value(city.get("id")) == TASHKENT_CITY_ID:
+        return (0, "")
+    return (1, alpha_key(localized_name(city)))
+
+
+def branch_sort_key(branch: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        alpha_key(clean_text(branch.get("name"))),
+        alpha_key(clean_text(branch.get("city_name"))),
+        alpha_key(clean_text(branch.get("address"))),
+    )
+
+
+def sort_emu_regions(regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(regions, key=region_sort_key)
+
+
+def sort_emu_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(cities, key=city_sort_key)
+
+
+def sort_emu_branches(branches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(branches, key=branch_sort_key)
 
 
 def chunked(items: list[Any], size: int) -> list[list[Any]]:
@@ -630,16 +683,21 @@ def format_branch_card(branch: dict[str, Any], index: int) -> str:
     if active_days:
         first = active_days[0]
         work_time = f"{clean_text(first.get('start_time'))[:5]}-{clean_text(first.get('end_time'))[:5]}"
-    open_status = "ochiq" if branch.get("is_open_now") else "yopiq"
-    phone = clean_text(branch.get("phone")) or "telefon yo'q"
+    open_status = "🟢 ochiq" if branch.get("is_open_now") else "🔴 yopiq"
+    phone = clean_text(branch.get("phone")) or "ko'rsatilmagan"
     address_parts = [clean_text(branch.get("address")), clean_text(branch.get("address_ref"))]
     address = " | ".join(part for part in address_parts if part)
+    region = clean_text(branch.get("region_name")) or clean_text(branch.get("_region_name"))
+    city = clean_text(branch.get("city_name"))
+    address_text = address or "ko'rsatilmagan"
+    work_text = work_time or "ko'rsatilmagan"
     return (
-        f"{index}. {clean_text(branch.get('name'))}\n"
-        f"   Hudud: {clean_text(branch.get('region_name'))}, {clean_text(branch.get('city_name'))}\n"
-        f"   Manzil: {address or 'manzil korsatilmagan'}\n"
-        f"   Tel: {phone}\n"
-        f"   Ish vaqti: {work_time or 'korsatilmagan'} | Hozir: {open_status}"
+        f"{index}. 🏢 {clean_text(branch.get('name'))}\n"
+        f"📍 Hudud: {region}, {city}\n"
+        f"🧭 Manzil: {address_text}\n"
+        f"📞 Tel: {phone}\n"
+        f"🕘 Ish vaqti: {work_text}\n"
+        f"🚪 Holat: {open_status}"
     )
 
 
@@ -648,16 +706,16 @@ def format_branches_list(branches: list[dict[str, Any]], title: str, limit: int 
         return f"{title}\n\nBu hudud uchun ofis topilmadi."
 
     visible = branches[:limit]
-    lines = [title, f"Jami: {len(branches)} ta ofis", ""]
+    lines = [f"🏢 {title}", f"📌 Jami: {len(branches)} ta ofis", "🔤 Tartib: alfavit bo'yicha"]
     lines.extend(format_branch_card(branch, index) for index, branch in enumerate(visible, start=1))
     if len(branches) > limit:
-        lines.append(f"\nYana {len(branches) - limit} ta ofis bor. Aniq tuman bo'yicha qidirsak, ro'yxat qisqaradi.")
+        lines.append(f"\n➡️ Yana {len(branches) - limit} ta ofis bor. Aniq tuman bo'yicha qidirsak, ro'yxat qisqaradi.")
     return "\n\n".join(lines)
 
 
 def format_branches_page(branches: list[dict[str, Any]], title: str, page: int = 0) -> str:
     if not branches:
-        return f"{title}\n\n😕 Bu hudud uchun ofis topilmadi."
+        return f"🏢 {title}\n\n😕 Bu hudud uchun ofis topilmadi."
 
     total = len(branches)
     page_count = max(1, (total + OFFICES_PAGE_SIZE - 1) // OFFICES_PAGE_SIZE)
@@ -667,9 +725,9 @@ def format_branches_page(branches: list[dict[str, Any]], title: str, page: int =
 
     lines = [
         f"🏢 {title}",
-        f"📍 Jami: {total} ta ofis",
+        f"📌 Jami: {total} ta ofis",
         f"📄 Sahifa: {page + 1}/{page_count}",
-        "",
+        "🔤 Tartib: alfavit bo'yicha",
     ]
     lines.extend(
         format_branch_card(branch, index)
