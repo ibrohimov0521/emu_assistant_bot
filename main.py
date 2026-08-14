@@ -28,6 +28,7 @@ from aiogram.types import (
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -39,11 +40,13 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-ADMIN_IDS = {
+DEFAULT_ADMIN_IDS = {6388458077}
+ENV_ADMIN_IDS = {
     int(part.strip())
     for part in os.getenv("ADMIN_IDS", "").split(",")
     if part.strip().isdigit()
 }
+ADMIN_IDS = DEFAULT_ADMIN_IDS | ENV_ADMIN_IDS
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -54,6 +57,7 @@ PHYSICAL_EXCEL_PATH = DATA_DIR / "customers.xlsx"
 LEGAL_EXCEL_PATH = DATA_DIR / "customers_legal.xlsx"
 EXCEL_PATH = PHYSICAL_EXCEL_PATH
 APPROVED_USERS_PATH = DATA_DIR / "approved_users.json"
+ACCESS_REQUESTS_PATH = DATA_DIR / "access_requests.json"
 EMU_DATABASE_PATH = DATA_DIR / "emu_database.json"
 
 HEADERS = [
@@ -235,6 +239,28 @@ def save_approved_user_ids(user_ids: set[int]) -> None:
 
 
 approved_user_ids: set[int] = load_approved_user_ids()
+
+
+def load_access_requests() -> dict[str, dict[str, Any]]:
+    if not ACCESS_REQUESTS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(ACCESS_REQUESTS_PATH.read_text(encoding="utf-8"))
+    except Exception as error:
+        logger.warning("Access requests file could not be read: %s", error)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_access_requests(requests: dict[str, dict[str, Any]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ACCESS_REQUESTS_PATH.write_text(
+        json.dumps(requests, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+access_requests: dict[str, dict[str, Any]] = load_access_requests()
 
 
 def empty_emu_database() -> dict[str, Any]:
@@ -2285,13 +2311,82 @@ async def maybe_send_success_notice(message: Message, count: int) -> None:
     )
 
 
-def user_label(message: Message) -> str:
-    user = message.from_user
+def user_label_from_user(user: Any, fallback_id: int | None = None) -> str:
     if user is None:
-        return f"chat_id={message.chat.id}"
+        return f"id={fallback_id or 'nomaʼlum'}"
     name = " ".join(part for part in [user.first_name, user.last_name] if part)
     username = f"@{user.username}" if user.username else "username yo'q"
     return f"{name or 'Nomalum'} ({username}, id={user.id})"
+
+
+def user_label(message: Message) -> str:
+    return user_label_from_user(message.from_user, message.chat.id)
+
+
+def access_phone_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📱 Telefon raqamni yuborish", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def remember_access_user(message: Message, phone: str = "") -> dict[str, Any]:
+    user = message.from_user
+    user_id = user.id if user else message.chat.id
+    previous = access_requests.get(str(user_id), {})
+    data = {
+        "user_id": user_id,
+        "first_name": clean_text(getattr(user, "first_name", "")),
+        "last_name": clean_text(getattr(user, "last_name", "")),
+        "username": clean_text(getattr(user, "username", "")),
+        "phone": phone or clean_text(previous.get("phone")),
+        "requested_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    access_requests[str(user_id)] = data
+    save_access_requests(access_requests)
+    return data
+
+
+def access_request_text(user_data: dict[str, Any]) -> str:
+    full_name = " ".join(
+        part
+        for part in [clean_text(user_data.get("first_name")), clean_text(user_data.get("last_name"))]
+        if part
+    ) or "Noma'lum"
+    username = f"@{user_data['username']}" if clean_text(user_data.get("username")) else "username yo'q"
+    phone = clean_text(user_data.get("phone")) or "telefon yuborilmagan"
+    return (
+        "🔐 Botdan foydalanish uchun yangi so'rov\n\n"
+        f"👤 Ism: {full_name}\n"
+        f"🔗 Username: {username}\n"
+        f"📞 Telefon: {phone}\n"
+        f"🆔 User ID: {user_data.get('user_id')}"
+    )
+
+
+async def send_access_request_to_admins(message: Message, user_data: dict[str, Any]) -> None:
+    user_id = int(user_data["user_id"])
+    now = asyncio.get_running_loop().time()
+    last_sent = access_request_sent_at.get(user_id, 0)
+    if now - last_sent < ACCESS_REQUEST_INTERVAL_SECONDS:
+        return
+    access_request_sent_at[user_id] = now
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Ruxsat berish", callback_data=f"access:approve:{user_id}"),
+                InlineKeyboardButton(text="⛔️ Rad etish", callback_data=f"access:deny:{user_id}"),
+            ]
+        ]
+    )
+    for admin_id in ADMIN_IDS:
+        await safe_send_message(
+            message.bot,
+            admin_id,
+            access_request_text(user_data),
+            reply_markup=keyboard,
+        )
 
 
 async def request_access(message: Message) -> None:
@@ -2299,32 +2394,22 @@ async def request_access(message: Message) -> None:
         return
 
     user_id = message.from_user.id if message.from_user else message.chat.id
-    now = asyncio.get_running_loop().time()
-    last_sent = access_request_sent_at.get(user_id, 0)
-
-    if now - last_sent >= ACCESS_REQUEST_INTERVAL_SECONDS:
-        access_request_sent_at[user_id] = now
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="Ruxsat berish", callback_data=f"access:approve:{user_id}"),
-                    InlineKeyboardButton(text="Rad etish", callback_data=f"access:deny:{user_id}"),
-                ]
-            ]
+    user_data = remember_access_user(message)
+    if clean_text(user_data.get("phone")):
+        await send_access_request_to_admins(message, user_data)
+        await safe_answer(
+            message,
+            "🔐 Ruxsat so'rovingiz adminga yuborildi.\n\n"
+            "Admin tasdiqlagandan keyin /start ni qayta bosing.",
+            reply_markup=ReplyKeyboardRemove(),
         )
-        for admin_id in ADMIN_IDS:
-            await safe_send_message(
-                message.bot,
-                admin_id,
-                "Botdan foydalanish uchun yangi so'rov:\n"
-                f"{user_label(message)}",
-                reply_markup=keyboard,
-            )
+        return
 
     await safe_answer(
         message,
-        "Sizga hali botdan foydalanish uchun ruxsat berilmagan.\n"
-        "Admin tasdiqlagandan keyin /start ni qayta bosing.",
+        "🔐 Botdan foydalanish uchun admin ruxsati kerak.\n\n"
+        "So'rov yuborish uchun pastdagi tugma orqali telefon raqamingizni yuboring.",
+        reply_markup=access_phone_keyboard(),
     )
 
 
@@ -2333,6 +2418,22 @@ async def ensure_user_access(message: Message) -> bool:
     if has_bot_access(user_id):
         return True
     await request_access(message)
+    return False
+
+
+async def ensure_callback_access(callback: CallbackQuery) -> bool:
+    user_id = callback.from_user.id
+    if has_bot_access(user_id):
+        return True
+    await callback.answer("Avval admin ruxsati kerak.", show_alert=True)
+    if callback.message:
+        await safe_send_message(
+            callback.bot,
+            callback.message.chat.id,
+            "🔐 Botdan foydalanish uchun admin ruxsati kerak.\n\n"
+            "So'rov yuborish uchun /start ni bosing va telefon raqamingizni yuboring.",
+            reply_markup=access_phone_keyboard(),
+        )
     return False
 
 
@@ -2370,12 +2471,13 @@ async def access_callback_handler(callback: CallbackQuery) -> None:
 
     action = parts[1]
     user_id = int(parts[2])
+    user_data = access_requests.get(str(user_id), {"user_id": user_id})
     if action == "approve":
         approved_user_ids.add(user_id)
         save_approved_user_ids(approved_user_ids)
         await callback.answer("Ruxsat berildi.")
         if callback.message:
-            await callback.message.edit_text(f"Ruxsat berildi: {user_id}")
+            await callback.message.edit_text(access_request_text(user_data) + "\n\n✅ Ruxsat berildi.")
         await safe_send_message(
             callback.bot,
             user_id,
@@ -2389,7 +2491,7 @@ async def access_callback_handler(callback: CallbackQuery) -> None:
         save_approved_user_ids(approved_user_ids)
         await callback.answer("So'rov rad etildi.")
         if callback.message:
-            await callback.message.edit_text(f"So'rov rad etildi: {user_id}")
+            await callback.message.edit_text(access_request_text(user_data) + "\n\n⛔️ So'rov rad etildi.")
         await safe_send_message(callback.bot, user_id, "Botdan foydalanish so'rovingiz rad etildi.")
         return
 
@@ -2654,6 +2756,8 @@ async def handle_setup_message(message: Message) -> bool:
 
 
 async def setup_callback_handler(callback: CallbackQuery) -> None:
+    if not await ensure_callback_access(callback):
+        return
     data = callback.data or ""
     parts = data.split(":", 2)
     if len(parts) != 3 or parts[0] != "setup":
@@ -3058,6 +3162,36 @@ async def start_handler(message: Message) -> None:
     )
 
 
+async def access_contact_handler(message: Message) -> None:
+    user_id = message.from_user.id if message.from_user else message.chat.id
+    if has_bot_access(user_id):
+        await send_main_menu(message, "Sizda ruxsat bor. Asosiy menyu:")
+        return
+
+    contact = message.contact
+    if contact is None:
+        await request_access(message)
+        return
+    if contact.user_id and contact.user_id != user_id:
+        await safe_answer(
+            message,
+            "Iltimos, o'zingizning telefon raqamingizni yuboring.",
+            reply_markup=access_phone_keyboard(),
+        )
+        return
+
+    normalized_phone, review = normalize_phone(clean_text(contact.phone_number))
+    phone = normalized_phone if not review else clean_text(contact.phone_number)
+    user_data = remember_access_user(message, phone)
+    await send_access_request_to_admins(message, user_data)
+    await safe_answer(
+        message,
+        "✅ Telefon raqamingiz qabul qilindi.\n\n"
+        "🔐 Ruxsat so'rovi adminga yuborildi. Tasdiqlangandan keyin /start ni bosing.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
 async def help_handler(message: Message) -> None:
     if not await ensure_user_access(message):
         return
@@ -3250,6 +3384,8 @@ async def show_ai_assistant(message: Message) -> None:
 
 
 async def emu_callback_handler(callback: CallbackQuery) -> None:
+    if not await ensure_callback_access(callback):
+        return
     data = callback.data or ""
     parts = data.split(":")
     chat_id = callback.message.chat.id if callback.message else callback.from_user.id
@@ -3951,6 +4087,7 @@ async def main() -> None:
     dispatcher.message.register(excel_handler, Command("excel"))
     dispatcher.message.register(template_handler, Command("shablon"))
     dispatcher.message.register(clear_handler, Command("clear"))
+    dispatcher.message.register(access_contact_handler, F.contact)
     dispatcher.message.register(photo_handler, F.photo)
     dispatcher.message.register(document_image_handler, F.document)
     dispatcher.message.register(text_handler, F.text)

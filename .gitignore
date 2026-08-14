@@ -6,6 +6,7 @@ data/customers.xlsx
 data/*.xlsx
 !data/.gitkeep
 data/approved_users.json
+data/access_requests.json
 data/emu_database.json
 mingit/
 MinGit-*.zip
