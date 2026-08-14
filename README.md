@@ -88,7 +88,7 @@ BOT_TOKEN=telegram_bot_token
 OPENAI_API_KEY=openai_api_key
 OPENAI_MODEL=gpt-4o-mini
 BATCH_CONCURRENCY=10
-ADMIN_IDS=123456789
+ADMIN_IDS=6388458077
 ```
 
 Botni ishga tushirish:
@@ -108,6 +108,7 @@ python main.py
    - `OPENAI_API_KEY`
    - `OPENAI_MODEL` ixtiyoriy
    - `BATCH_CONCURRENCY` ixtiyoriy, bir vaqtda nechta xabar tahlil qilinishini belgilaydi
+   - `ADMIN_IDS`
 4. Start command:
 
 ```bash
@@ -123,7 +124,7 @@ Railway logida `BOT_TOKEN environment variable sozlanmagan` chiqsa, demak token 
 `ADMIN_IDS` ichiga admin Telegram user ID yoziladi. Bir nechta admin bo'lsa vergul bilan ajrating:
 
 ```env
-ADMIN_IDS=123456789,987654321
+ADMIN_IDS=6388458077
 ```
 
 Yangi foydalanuvchi `/start` bosganda adminlarga ruxsat so'rovi boradi. Admin tasdiqlagan userlar `data/approved_users.json` faylida saqlanadi.
