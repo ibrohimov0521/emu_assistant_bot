@@ -463,8 +463,7 @@ async def get_emu_branches(region_id: int | None = None, city_id: int | None = N
         branches = [branch for branch in branches if region_id_from_item(branch) == int(region_id)]
     if city_id:
         city_filtered = [branch for branch in branches if city_id_from_item(branch) == int(city_id)]
-        if city_filtered:
-            branches = city_filtered
+        branches = city_filtered
     return branches
 
 
@@ -3565,8 +3564,6 @@ async def handle_service_text(message: Message) -> bool:
             service_id = int(state["service_id"])
             result = await calculate_emu_delivery(sender_city_id, receiver_city_id, weight, service_id)
             receiver_branches = await get_emu_branches(city_id=receiver_city_id)
-            if not receiver_branches and state.get("receiver_region_id"):
-                receiver_branches = await get_emu_branches(region_id=int(state["receiver_region_id"]))
             await safe_answer(
                 message,
                 format_calculator_result(result, service_id, receiver_branches),
