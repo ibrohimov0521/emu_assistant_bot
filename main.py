@@ -6,6 +6,9 @@ import logging
 import os
 import re
 import shutil
+import time
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from difflib import get_close_matches
 from copy import copy
@@ -88,6 +91,8 @@ reply_locks: dict[int, asyncio.Lock] = {}
 last_success_notice_at: dict[int, float] = {}
 batch_states: dict[int, "BatchState"] = {}
 access_request_sent_at: dict[int, float] = {}
+service_states: dict[int, dict[str, Any]] = {}
+emu_api_cache: dict[str, tuple[float, Any]] = {}
 
 SUCCESS_NOTICE_INTERVAL_SECONDS = 12
 BATCH_IDLE_SECONDS = 3
@@ -96,6 +101,9 @@ BATCH_PROGRESS_EDIT_INTERVAL_SECONDS = 1.5
 ACCESS_REQUEST_INTERVAL_SECONDS = 60
 
 MENU_COLLECT = "Excel ga yig'ish"
+MENU_OFFICES = "Ofislar ro'yxati"
+MENU_CALCULATOR = "Kalkulyator"
+MENU_AI_ASSISTANT = "AI yordamchi"
 MENU_ARCHIVE = "Arxiv"
 MENU_SETTINGS = "Sozlamalar"
 MENU_BACK = "Orqaga"
@@ -108,6 +116,9 @@ MENU_RESET_SETUP = "Jo'natuvchi sozlamalari"
 MENU_ACCESS_STATUS = "Ruxsat holati"
 MENU_TEXTS = {
     MENU_COLLECT,
+    MENU_OFFICES,
+    MENU_CALCULATOR,
+    MENU_AI_ASSISTANT,
     MENU_ARCHIVE,
     MENU_SETTINGS,
     MENU_BACK,
@@ -122,6 +133,10 @@ MENU_TEXTS = {
 
 CLIENT_TYPE_LEGAL = "legal"
 CLIENT_TYPE_PHYSICAL = "physical"
+EMU_API_BASE_URL = "https://apiv1.emu.uz"
+TASHKENT_REGION_ID = 13
+TASHKENT_CITY_ID = 198
+EMU_CACHE_TTL_SECONDS = 3600
 
 
 @dataclass
@@ -165,6 +180,221 @@ def save_approved_user_ids(user_ids: set[int]) -> None:
 approved_user_ids: set[int] = load_approved_user_ids()
 
 
+def emu_cache_key(path: str, params: dict[str, Any] | None = None) -> str:
+    clean_params = {
+        key: value
+        for key, value in (params or {}).items()
+        if value not in (None, "")
+    }
+    return f"{path}?{urllib.parse.urlencode(sorted(clean_params.items()))}"
+
+
+def emu_api_get(path: str, params: dict[str, Any] | None = None) -> Any:
+    key = emu_cache_key(path, params)
+    cached = emu_api_cache.get(key)
+    now = time.time()
+    if cached and now - cached[0] < EMU_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    query = urllib.parse.urlencode(
+        {
+            name: value
+            for name, value in (params or {}).items()
+            if value not in (None, "")
+        }
+    )
+    url = f"{EMU_API_BASE_URL}{path}{'?' + query if query else ''}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "Accept-Language": "uz",
+            "User-Agent": "EMU Assistant Bot",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    emu_api_cache[key] = (now, data)
+    return data
+
+
+def emu_api_post(path: str, payload: dict[str, Any], params: dict[str, Any] | None = None) -> Any:
+    query = urllib.parse.urlencode(
+        {
+            name: value
+            for name, value in (params or {}).items()
+            if value not in (None, "")
+        }
+    )
+    url = f"{EMU_API_BASE_URL}{path}{'?' + query if query else ''}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Accept-Language": "uz",
+            "Content-Type": "application/json",
+            "User-Agent": "EMU Assistant Bot",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+async def get_emu_regions() -> list[dict[str, Any]]:
+    return await asyncio.to_thread(emu_api_get, "/api/v1/regions")
+
+
+async def get_emu_cities(region_id: int | None = None) -> list[dict[str, Any]]:
+    params = {"region_id": region_id} if region_id else None
+    return await asyncio.to_thread(emu_api_get, "/api/v1/cities", params)
+
+
+async def get_emu_branches(region_id: int | None = None, city_id: int | None = None) -> list[dict[str, Any]]:
+    params = {"region_id": region_id, "city_id": city_id}
+    return await asyncio.to_thread(emu_api_get, "/api/v1/branches", params)
+
+
+async def calculate_emu_delivery(
+    sender_city_id: int,
+    receiver_city_id: int,
+    weight: float,
+    service_id: int | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "sender_city_id": sender_city_id,
+        "receiver_city_id": receiver_city_id,
+        "service": service_id,
+        "packages": [
+            {
+                "mass": weight,
+                "length": None,
+                "width": None,
+                "height": None,
+            }
+        ],
+    }
+    return await asyncio.to_thread(emu_api_post, "/api/v1/calculator", payload, {"platform": "app"})
+
+
+def localized_name(item: dict[str, Any], locale: str = "UZ") -> str:
+    i18n = item.get("i18n_name")
+    if isinstance(i18n, dict):
+        return clean_text(i18n.get(locale)) or clean_text(i18n.get("UZ")) or clean_text(item.get("name"))
+    return clean_text(item.get("name"))
+
+
+def chunked(items: list[Any], size: int) -> list[list[Any]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def region_keyboard(regions: list[dict[str, Any]], prefix: str) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(text=localized_name(region), callback_data=f"{prefix}:{region['id']}")
+        for region in regions
+    ]
+    rows = chunked(buttons, 2)
+    rows.append([InlineKeyboardButton(text=MENU_BACK, callback_data="emu:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def city_keyboard(cities: list[dict[str, Any]], prefix: str) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(text=localized_name(city), callback_data=f"{prefix}:{city['id']}")
+        for city in cities
+    ]
+    rows = chunked(buttons, 2)
+    rows.append([InlineKeyboardButton(text=MENU_BACK, callback_data="emu:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def service_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="ДО ОФИСА", callback_data="emu:calc_service:1"),
+                InlineKeyboardButton(text="НА ДОМ", callback_data="emu:calc_service:3"),
+            ],
+            [InlineKeyboardButton(text=MENU_BACK, callback_data="emu:back")],
+        ]
+    )
+
+
+def format_branch_card(branch: dict[str, Any], index: int) -> str:
+    schedule = branch.get("work_schedule") or []
+    active_days = [day for day in schedule if day.get("is_active")]
+    work_time = ""
+    if active_days:
+        first = active_days[0]
+        work_time = f"{clean_text(first.get('start_time'))[:5]}-{clean_text(first.get('end_time'))[:5]}"
+    open_status = "ochiq" if branch.get("is_open_now") else "yopiq"
+    phone = clean_text(branch.get("phone")) or "telefon yo'q"
+    address_parts = [clean_text(branch.get("address")), clean_text(branch.get("address_ref"))]
+    address = " | ".join(part for part in address_parts if part)
+    return (
+        f"{index}. {clean_text(branch.get('name'))}\n"
+        f"   Hudud: {clean_text(branch.get('region_name'))}, {clean_text(branch.get('city_name'))}\n"
+        f"   Manzil: {address or 'manzil korsatilmagan'}\n"
+        f"   Tel: {phone}\n"
+        f"   Ish vaqti: {work_time or 'korsatilmagan'} | Hozir: {open_status}"
+    )
+
+
+def format_branches_list(branches: list[dict[str, Any]], title: str, limit: int = 12) -> str:
+    if not branches:
+        return f"{title}\n\nBu hudud uchun ofis topilmadi."
+
+    visible = branches[:limit]
+    lines = [title, f"Jami: {len(branches)} ta ofis", ""]
+    lines.extend(format_branch_card(branch, index) for index, branch in enumerate(visible, start=1))
+    if len(branches) > limit:
+        lines.append(f"\nYana {len(branches) - limit} ta ofis bor. Aniq tuman bo'yicha qidirsak, ro'yxat qisqaradi.")
+    return "\n\n".join(lines)
+
+
+def format_calculator_result(
+    result: dict[str, Any],
+    service_id: int,
+    receiver_branches: list[dict[str, Any]],
+) -> str:
+    results = result.get("results") if isinstance(result, dict) else []
+    selected = None
+    for item in results or []:
+        if int(item.get("service_id") or 0) == service_id:
+            selected = item
+            break
+    if selected is None and results:
+        selected = results[0]
+
+    if not selected:
+        price_text = "Narx topilmadi"
+    else:
+        price = selected.get("price")
+        currency = selected.get("currency") or "UZS"
+        days = ""
+        if selected.get("min_delivery_days") and selected.get("max_delivery_days"):
+            days = f"\nMuddat: {selected['min_delivery_days']}-{selected['max_delivery_days']} kun"
+        price_value = f"{float(price):,.0f}".replace(",", " ") if price is not None else "topilmadi"
+        price_text = (
+            f"Xizmat: {clean_text(selected.get('service_name'))}\n"
+            f"Narx: {price_value} {currency}"
+            + days
+        )
+
+    branch_lines = []
+    if receiver_branches:
+        branch_lines.append("Mavjud ofislar:")
+        for branch in receiver_branches[:5]:
+            branch_lines.append(f"- {clean_text(branch.get('name'))}: {clean_text(branch.get('address'))}")
+        if len(receiver_branches) > 5:
+            branch_lines.append(f"... yana {len(receiver_branches) - 5} ta ofis bor")
+    else:
+        branch_lines.append("Bu tuman/shahar uchun ofis topilmadi.")
+
+    return "Hisob-kitob natijasi:\n\n" + price_text + "\n\n" + "\n".join(branch_lines)
+
+
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -178,8 +408,10 @@ def has_bot_access(user_id: int) -> bool:
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=MENU_COLLECT), KeyboardButton(text=MENU_ARCHIVE)],
-            [KeyboardButton(text=MENU_SETTINGS)],
+            [KeyboardButton(text=MENU_COLLECT)],
+            [KeyboardButton(text=MENU_OFFICES), KeyboardButton(text=MENU_CALCULATOR)],
+            [KeyboardButton(text=MENU_AI_ASSISTANT)],
+            [KeyboardButton(text=MENU_ARCHIVE), KeyboardButton(text=MENU_SETTINGS)],
         ],
         resize_keyboard=True,
     )
@@ -1254,6 +1486,9 @@ async def send_main_menu(message: Message, text: str | None = None) -> None:
         or (
             "Asosiy menyu.\n\n"
             "Excel ga yig'ish - yangi jo'natmalar ro'yxatini yig'ish.\n"
+            "Ofislar ro'yxati - viloyat bo'yicha filiallarni ko'rish.\n"
+            "Kalkulyator - EMU API orqali narx hisoblash.\n"
+            "AI yordamchi - savol berib kerakli bo'limdan ma'lumot olish.\n"
             "Arxiv - tayyor Excel va shablon fayllar.\n"
             "Sozlamalar - jo'natuvchi ma'lumotlari va ruxsat holati."
         ),
@@ -1989,6 +2224,184 @@ async def template_handler(message: Message) -> None:
     )
 
 
+async def show_offices_menu(message: Message) -> None:
+    service_states.pop(message.chat.id, None)
+    try:
+        regions = await get_emu_regions()
+    except Exception as error:
+        logger.exception("EMU regions loading failed")
+        await safe_answer(message, f"Ofislar ro'yxatini olishda xatolik: {error}")
+        return
+
+    await safe_answer(
+        message,
+        "Ofislar ro'yxati.\n\nOldin viloyatni tanlang, keyin shu viloyatdagi ofislar zamonaviy ro'yxat ko'rinishida chiqadi.",
+        reply_markup=region_keyboard(regions, "emu:office_region"),
+    )
+
+
+async def show_calculator_menu(message: Message) -> None:
+    service_states[message.chat.id] = {"mode": "calculator", "step": "sender_region"}
+    try:
+        regions = await get_emu_regions()
+    except Exception as error:
+        logger.exception("EMU regions loading failed")
+        await safe_answer(message, f"Kalkulyator ma'lumotlarini olishda xatolik: {error}")
+        return
+
+    await safe_answer(
+        message,
+        "Kalkulyator bo'limi.\n\nJo'natilish nuqtasining viloyatini tanlang.",
+        reply_markup=region_keyboard(regions, "emu:calc_sender_region"),
+    )
+
+
+async def show_ai_assistant(message: Message) -> None:
+    service_states[message.chat.id] = {"mode": "ai"}
+    await safe_answer(
+        message,
+        "AI yordamchi bo'limi.\n\n"
+        "EMU bo'yicha savolingizni yozing. Masalan:\n"
+        "- Samarqand ofislari qayerda?\n"
+        "- Andijondan Toshkentga 2 kg qancha?\n"
+        "- Do ofisa va Na dom farqi nima?\n\n"
+        "Chiqish uchun Orqaga tugmasini bosing.",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=MENU_BACK)]],
+            resize_keyboard=True,
+        ),
+    )
+
+
+async def emu_callback_handler(callback: CallbackQuery) -> None:
+    data = callback.data or ""
+    parts = data.split(":")
+    chat_id = callback.message.chat.id if callback.message else callback.from_user.id
+
+    if data == "emu:back":
+        service_states.pop(chat_id, None)
+        await callback.answer()
+        if callback.message:
+            await safe_edit_text(callback.message, "Asosiy menyuga qaytdingiz.")
+            await safe_send_message(callback.bot, chat_id, "Asosiy menyu", reply_markup=main_menu_keyboard())
+        return
+
+    try:
+        if len(parts) == 3 and parts[1] == "office_region":
+            region_id = int(parts[2])
+            branches = await get_emu_branches(region_id=region_id)
+            regions = await get_emu_regions()
+            region = next((item for item in regions if int(item.get("id") or 0) == region_id), {})
+            title = f"{localized_name(region)} ofislari"
+            await callback.answer("Ofislar yuklandi.")
+            if callback.message:
+                await safe_edit_text(
+                    callback.message,
+                    format_branches_list(branches, title),
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[[InlineKeyboardButton(text=MENU_BACK, callback_data="emu:back")]]
+                    ),
+                )
+            return
+
+        if len(parts) == 3 and parts[1] == "calc_sender_region":
+            region_id = int(parts[2])
+            state = service_states.setdefault(chat_id, {"mode": "calculator"})
+            state.update({"sender_region_id": region_id})
+            await callback.answer()
+            if region_id == TASHKENT_REGION_ID:
+                state.update({"sender_city_id": TASHKENT_CITY_ID, "step": "receiver_region"})
+                regions = await get_emu_regions()
+                if callback.message:
+                    await safe_edit_text(
+                        callback.message,
+                        "Jo'natilish nuqtasi: Toshkent.\n\nEndi olish nuqtasining viloyatini tanlang.",
+                        reply_markup=region_keyboard(regions, "emu:calc_receiver_region"),
+                    )
+                return
+            cities = await get_emu_cities(region_id)
+            state["step"] = "sender_city"
+            if callback.message:
+                await safe_edit_text(
+                    callback.message,
+                    "Jo'natilish nuqtasining tuman/shahrini tanlang.",
+                    reply_markup=city_keyboard(cities, "emu:calc_sender_city"),
+                )
+            return
+
+        if len(parts) == 3 and parts[1] == "calc_sender_city":
+            city_id = int(parts[2])
+            state = service_states.setdefault(chat_id, {"mode": "calculator"})
+            state.update({"sender_city_id": city_id, "step": "receiver_region"})
+            regions = await get_emu_regions()
+            await callback.answer()
+            if callback.message:
+                await safe_edit_text(
+                    callback.message,
+                    "Endi olish nuqtasining viloyatini tanlang.",
+                    reply_markup=region_keyboard(regions, "emu:calc_receiver_region"),
+                )
+            return
+
+        if len(parts) == 3 and parts[1] == "calc_receiver_region":
+            region_id = int(parts[2])
+            state = service_states.setdefault(chat_id, {"mode": "calculator"})
+            state.update({"receiver_region_id": region_id})
+            await callback.answer()
+            if region_id == TASHKENT_REGION_ID:
+                state.update({"receiver_city_id": TASHKENT_CITY_ID, "step": "service"})
+                if callback.message:
+                    await safe_edit_text(
+                        callback.message,
+                        "Olish nuqtasi: Toshkent.\n\nYetkazib berish turini tanlang.",
+                        reply_markup=service_keyboard(),
+                    )
+                return
+            cities = await get_emu_cities(region_id)
+            state["step"] = "receiver_city"
+            if callback.message:
+                await safe_edit_text(
+                    callback.message,
+                    "Olish nuqtasining tuman/shahrini tanlang.",
+                    reply_markup=city_keyboard(cities, "emu:calc_receiver_city"),
+                )
+            return
+
+        if len(parts) == 3 and parts[1] == "calc_receiver_city":
+            city_id = int(parts[2])
+            state = service_states.setdefault(chat_id, {"mode": "calculator"})
+            state.update({"receiver_city_id": city_id, "step": "service"})
+            await callback.answer()
+            if callback.message:
+                await safe_edit_text(
+                    callback.message,
+                    "Olish turi: ofisgachami yoki uygachami?",
+                    reply_markup=service_keyboard(),
+                )
+            return
+
+        if len(parts) == 3 and parts[1] == "calc_service":
+            service_id = int(parts[2])
+            state = service_states.setdefault(chat_id, {"mode": "calculator"})
+            state.update({"service_id": service_id, "step": "weight"})
+            await callback.answer()
+            if callback.message:
+                await safe_edit_text(
+                    callback.message,
+                    "Jo'natmaning og'irligini kiriting.\n\n"
+                    "Agar gabaritda o'lchangan og'irligi kattaroq bo'lsa, shuni kiriting. Masalan: 1.5",
+                )
+            return
+    except Exception as error:
+        logger.exception("EMU callback failed")
+        await callback.answer("Xatolik yuz berdi.", show_alert=True)
+        if callback.message:
+            await safe_answer(callback.message, f"Xatolik: {error}")
+        return
+
+    await callback.answer()
+
+
 async def show_collect_menu(message: Message) -> None:
     await safe_answer(
         message,
@@ -2028,11 +2441,24 @@ async def handle_menu_message(message: Message) -> bool:
 
     if text == MENU_BACK:
         setup_states.pop(message.chat.id, None)
+        service_states.pop(message.chat.id, None)
         await send_main_menu(message)
         return True
 
     if text == MENU_COLLECT:
         await show_collect_menu(message)
+        return True
+
+    if text == MENU_OFFICES:
+        await show_offices_menu(message)
+        return True
+
+    if text == MENU_CALCULATOR:
+        await show_calculator_menu(message)
+        return True
+
+    if text == MENU_AI_ASSISTANT:
+        await show_ai_assistant(message)
         return True
 
     if text == MENU_ARCHIVE:
@@ -2078,6 +2504,136 @@ async def handle_menu_message(message: Message) -> bool:
     return False
 
 
+async def answer_ai_question(message: Message, question: str) -> None:
+    lowered = question.lower()
+    context_parts: list[str] = []
+
+    try:
+        if any(word in lowered for word in ["ofis", "filial", "office", "branch"]):
+            branches = await get_emu_branches()
+            query_words = {
+                word
+                for word in re.findall(r"[\w'`-]+", lowered)
+                if len(word) >= 4 and word not in {"ofis", "filial", "office", "branch", "qayerda"}
+            }
+            matching = [
+                branch
+                for branch in branches
+                if query_words
+                and query_words
+                & set(
+                    re.findall(
+                        r"[\w'`-]+",
+                        " ".join(
+                            [
+                                clean_text(branch.get("name")),
+                                clean_text(branch.get("address")),
+                                clean_text(branch.get("city_name")),
+                                clean_text(branch.get("region_name")),
+                            ]
+                        ).lower(),
+                    )
+                )
+            ]
+            if not matching:
+                matching = branches[:10]
+            context_parts.append(format_branches_list(matching[:10], "Ofislar bo'yicha topilgan ma'lumot", limit=10))
+
+        if any(word in lowered for word in ["viloyat", "tuman", "shahar", "city", "region"]):
+            cities = await get_emu_cities()
+            sample = [
+                f"{city.get('id')}: {localized_name(city)} ({clean_text((city.get('region_name') or {}).get('UZ'))})"
+                for city in cities[:60]
+            ]
+            context_parts.append("EMU shahar/tuman ma'lumotlari:\n" + "\n".join(sample))
+
+        if any(word in lowered for word in ["narx", "kalk", "qancha", "kg", "sum", "so'm", "som"]):
+            context_parts.append(
+                "Kalkulyator uchun aniq hisoblashda jo'natuvchi shahar/tuman, oluvchi shahar/tuman, "
+                "yetkazish turi va og'irlik kerak. Botdagi Kalkulyator bo'limi shu ma'lumotlar asosida EMU API'dan narx oladi."
+            )
+
+        if not context_parts:
+            context_parts.append(
+                "EMU Express saytida ofislar, shahar/tumanlar, filial telefonlari, kalkulyator narxlari, "
+                "Do ofisa/Na dom tariflari va indeks ma'lumotlari mavjud."
+            )
+
+        context = "\n\n".join(context_parts)[:8000]
+        if openai_client is None:
+            await safe_answer(message, context[:3500])
+            return
+
+        response = await asyncio.to_thread(
+            openai_client.responses.create,
+            model=OPENAI_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Siz EMU botining yordamchisisiz. Faqat berilgan kontekstga tayanib, "
+                        "qisqa, amaliy va o'zbek tilida javob bering. Agar ma'lumot yetmasa, "
+                        "qaysi bo'limdan foydalanish kerakligini ayting."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Kontekst:\n{context}\n\nSavol:\n{question}",
+                },
+            ],
+        )
+        answer = clean_text(getattr(response, "output_text", ""))
+        await safe_answer(message, answer or "Javob topilmadi. Savolni aniqroq yozing.")
+    except Exception as error:
+        logger.exception("AI assistant failed")
+        await safe_answer(message, f"AI yordamchida xatolik: {error}")
+
+
+async def handle_service_text(message: Message) -> bool:
+    state = service_states.get(message.chat.id)
+    if not state:
+        return False
+
+    mode = state.get("mode")
+    text = (message.text or "").strip()
+
+    if mode == "ai":
+        await answer_ai_question(message, text)
+        return True
+
+    if mode == "calculator" and state.get("step") == "weight":
+        normalized = text.replace(",", ".")
+        try:
+            weight = float(normalized)
+        except ValueError:
+            await safe_answer(message, "Og'irlikni raqamda kiriting. Masalan: 1.5")
+            return True
+        if weight <= 0:
+            await safe_answer(message, "Og'irlik 0 dan katta bo'lishi kerak.")
+            return True
+
+        try:
+            sender_city_id = int(state["sender_city_id"])
+            receiver_city_id = int(state["receiver_city_id"])
+            service_id = int(state["service_id"])
+            result = await calculate_emu_delivery(sender_city_id, receiver_city_id, weight, service_id)
+            receiver_branches = await get_emu_branches(city_id=receiver_city_id)
+            if not receiver_branches and state.get("receiver_region_id"):
+                receiver_branches = await get_emu_branches(region_id=int(state["receiver_region_id"]))
+            await safe_answer(
+                message,
+                format_calculator_result(result, service_id, receiver_branches),
+                reply_markup=main_menu_keyboard(),
+            )
+            service_states.pop(message.chat.id, None)
+        except Exception as error:
+            logger.exception("Calculator failed")
+            await safe_answer(message, f"Kalkulyator xatoligi: {error}")
+        return True
+
+    return False
+
+
 async def clear_handler(message: Message, start_next_setup: bool = True) -> None:
     if not await ensure_user_access(message):
         return
@@ -2100,7 +2656,12 @@ async def text_handler(message: Message) -> None:
     text = message.text or ""
     if text.strip() in MENU_TEXTS:
         setup_states.pop(message.chat.id, None)
+        if text.strip() != MENU_BACK:
+            service_states.pop(message.chat.id, None)
         await handle_menu_message(message)
+        return
+
+    if await handle_service_text(message):
         return
 
     if await handle_setup_message(message):
@@ -2202,6 +2763,7 @@ async def main() -> None:
     await setup_bot_commands(bot)
 
     dispatcher.callback_query.register(access_callback_handler, F.data.startswith("access:"))
+    dispatcher.callback_query.register(emu_callback_handler, F.data.startswith("emu:"))
     dispatcher.callback_query.register(setup_callback_handler, F.data.startswith("setup:"))
     dispatcher.message.register(start_handler, Command("start"))
     dispatcher.message.register(setup_handler, Command("setup"))
