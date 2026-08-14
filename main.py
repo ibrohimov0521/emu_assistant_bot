@@ -49,7 +49,9 @@ DATA_DIR = BASE_DIR / "data"
 TEMPLATE_DIR = BASE_DIR / "templates"
 TEMPLATE_PATH = TEMPLATE_DIR / "yangi_shablon.xlsx"
 BRANCH_CODES_PATH = TEMPLATE_DIR / "branch_codes.xlsx"
-EXCEL_PATH = DATA_DIR / "customers.xlsx"
+PHYSICAL_EXCEL_PATH = DATA_DIR / "customers.xlsx"
+LEGAL_EXCEL_PATH = DATA_DIR / "customers_legal.xlsx"
+EXCEL_PATH = PHYSICAL_EXCEL_PATH
 APPROVED_USERS_PATH = DATA_DIR / "approved_users.json"
 
 HEADERS = [
@@ -70,11 +72,10 @@ HEADERS = [
     "Город-отправитель",
     "Город-получатель",
     "Оплата получателем",
-    "Тип вложение",
-    "Код упаковке",
 ]
 
 EXCEL_COLUMN_COUNT = len(HEADERS)
+LEGAL_HEADERS = HEADERS[:10] + HEADERS[15:17]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -926,78 +927,117 @@ Qoidalar:
 """.strip().format(location_list=LOCATION_LIST_FOR_PROMPT)
 
 
-def apply_template_header(sheet: Any) -> None:
+def headers_for_client_type(client_type: str = CLIENT_TYPE_PHYSICAL) -> list[str]:
+    return LEGAL_HEADERS if client_type == CLIENT_TYPE_LEGAL else HEADERS
+
+
+def excel_path_for_client_type(client_type: str = CLIENT_TYPE_PHYSICAL) -> Path:
+    return LEGAL_EXCEL_PATH if client_type == CLIENT_TYPE_LEGAL else PHYSICAL_EXCEL_PATH
+
+
+def current_client_type(chat_id: int) -> str:
+    sender = sender_sessions.get(chat_id) or {}
+    return sender.get("client_type", CLIENT_TYPE_PHYSICAL)
+
+
+def template_column_map(template_sheet: Any) -> dict[str, int]:
+    return {
+        clean_text(template_sheet.cell(1, col).value): col
+        for col in range(1, template_sheet.max_column + 1)
+        if clean_text(template_sheet.cell(1, col).value)
+    }
+
+
+def apply_template_header(sheet: Any, headers: list[str] | None = None) -> None:
+    headers = headers or HEADERS
     if TEMPLATE_PATH.exists():
         template = load_workbook(TEMPLATE_PATH)
         try:
             template_sheet = template.active
-            for col in range(1, EXCEL_COLUMN_COUNT + 1):
-                source = template_sheet.cell(1, col)
+            source_columns = template_column_map(template_sheet)
+            for col, header in enumerate(headers, start=1):
+                source_col = source_columns.get(header, col)
+                source = template_sheet.cell(1, source_col)
                 target = sheet.cell(1, col)
-                target.value = source.value
+                target.value = header
                 if source.has_style:
                     target._style = copy(source._style)
                 target.number_format = source.number_format
                 target.alignment = copy(source.alignment)
                 letter = target.column_letter
-                sheet.column_dimensions[letter].width = template_sheet.column_dimensions[letter].width
+                source_letter = source.column_letter
+                sheet.column_dimensions[letter].width = template_sheet.column_dimensions[source_letter].width
         finally:
             template.close()
         return
 
-    for col, header in enumerate(HEADERS, start=1):
+    for col, header in enumerate(headers, start=1):
         sheet.cell(1, col).value = header
 
 
-def ensure_workbook_schema() -> None:
-    workbook = load_workbook(EXCEL_PATH)
+def ensure_workbook_schema(path: Path, headers: list[str]) -> None:
+    workbook = load_workbook(path)
     try:
         sheet = workbook.active
-        current_headers = [sheet.cell(1, col).value for col in range(1, EXCEL_COLUMN_COUNT + 1)]
+        current_headers = [sheet.cell(1, col).value for col in range(1, len(headers) + 1)]
 
-        if current_headers == HEADERS:
+        if current_headers == headers and sheet.max_column == len(headers):
             return
 
-        if (
-            current_headers[:17] == HEADERS[:17]
-            and current_headers[17] == "Код упаковке"
-            and (len(current_headers) < 19 or current_headers[18] in (None, ""))
-        ):
-            sheet.insert_cols(18)
-            apply_template_header(sheet)
-            workbook.save(EXCEL_PATH)
-            return
-
-        if current_headers[: EXCEL_COLUMN_COUNT - 1] == HEADERS[:-1] and current_headers[-1] in (None, ""):
-            apply_template_header(sheet)
-            workbook.save(EXCEL_PATH)
+        if current_headers == headers and sheet.max_column > len(headers):
+            sheet.delete_cols(len(headers) + 1, sheet.max_column - len(headers))
+            workbook.save(path)
             return
 
         first_row_has_data = any(value not in (None, "") for value in current_headers)
         if first_row_has_data:
-            sheet.insert_rows(1)
+            header_to_source = {
+                clean_text(sheet.cell(1, col).value): col
+                for col in range(1, sheet.max_column + 1)
+                if clean_text(sheet.cell(1, col).value)
+            }
+            if all(header in header_to_source for header in headers):
+                rows = [
+                    [sheet.cell(row_index, header_to_source[header]).value for header in headers]
+                    for row_index in range(2, sheet.max_row + 1)
+                ]
+                sheet.delete_rows(1, sheet.max_row)
+                apply_template_header(sheet, headers)
+                for row in rows:
+                    sheet.append(row)
+            else:
+                sheet.insert_rows(1)
+                apply_template_header(sheet, headers)
+        else:
+            apply_template_header(sheet, headers)
 
-        apply_template_header(sheet)
-        workbook.save(EXCEL_PATH)
+        if sheet.max_column > len(headers):
+            sheet.delete_cols(len(headers) + 1, sheet.max_column - len(headers))
+        workbook.save(path)
     finally:
         workbook.close()
 
 
-def ensure_excel_file() -> None:
+def ensure_excel_file(client_type: str = CLIENT_TYPE_PHYSICAL) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if EXCEL_PATH.exists():
-        ensure_workbook_schema()
+    path = excel_path_for_client_type(client_type)
+    headers = headers_for_client_type(client_type)
+    if path.exists():
+        ensure_workbook_schema(path, headers)
         return
 
     if TEMPLATE_PATH.exists():
-        shutil.copyfile(TEMPLATE_PATH, EXCEL_PATH)
-        workbook = load_workbook(EXCEL_PATH)
+        shutil.copyfile(TEMPLATE_PATH, path)
+        workbook = load_workbook(path)
         try:
             sheet = workbook.active
-            for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=EXCEL_COLUMN_COUNT):
+            apply_template_header(sheet, headers)
+            if sheet.max_column > len(headers):
+                sheet.delete_cols(len(headers) + 1, sheet.max_column - len(headers))
+            for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=len(headers)):
                 for cell in row:
                     cell.value = None
-            workbook.save(EXCEL_PATH)
+            workbook.save(path)
         finally:
             workbook.close()
         return
@@ -1005,18 +1045,20 @@ def ensure_excel_file() -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Шаблон"
-    sheet.append(HEADERS)
-    widths = [18, 24, 19, 21, 23, 18, 13, 13, 20, 27, 25, 20, 22, 24, 22, 21, 23, 18, 16]
+    sheet.append(headers)
+    widths = [18, 24, 19, 21, 23, 18, 13, 13, 20, 27, 25, 20, 22, 24, 22, 21, 23]
     for index, width in enumerate(widths, start=1):
-        sheet.column_dimensions[chr(64 + index)].width = width
+        if index <= len(headers):
+            sheet.column_dimensions[chr(64 + index)].width = width
 
-    workbook.save(EXCEL_PATH)
+    workbook.save(path)
 
 
-def reset_excel_file() -> None:
-    if EXCEL_PATH.exists():
-        EXCEL_PATH.unlink()
-    ensure_excel_file()
+def reset_excel_file(client_type: str = CLIENT_TYPE_PHYSICAL) -> None:
+    path = excel_path_for_client_type(client_type)
+    if path.exists():
+        path.unlink()
+    ensure_excel_file(client_type)
 
 
 def normalize_phone(raw_phone: str) -> tuple[str, str]:
@@ -1803,7 +1845,7 @@ def normalize_cipher_prefix(value: str) -> str:
 
 def find_last_data_row(sheet: Any) -> int:
     for row_index in range(sheet.max_row, 1, -1):
-        if any(sheet.cell(row_index, col).value not in (None, "") for col in range(1, EXCEL_COLUMN_COUNT + 1)):
+        if any(sheet.cell(row_index, col).value not in (None, "") for col in range(1, sheet.max_column + 1)):
             return row_index
     return 1
 
@@ -1829,10 +1871,10 @@ def next_cipher_index(sheet: Any, prefix: str) -> int:
     return highest + 1
 
 
-def copy_row_style(sheet: Any, source_row: int, target_row: int) -> None:
+def copy_row_style(sheet: Any, source_row: int, target_row: int, column_count: int) -> None:
     if source_row > sheet.max_row:
         source_row = 1
-    for col in range(1, EXCEL_COLUMN_COUNT + 1):
+    for col in range(1, column_count + 1):
         source = sheet.cell(source_row, col)
         target = sheet.cell(target_row, col)
         if source.has_style:
@@ -1844,13 +1886,15 @@ def copy_row_style(sheet: Any, source_row: int, target_row: int) -> None:
 
 
 def is_cipher_prefix_available(prefix: str) -> bool:
-    ensure_excel_file()
-    workbook = load_workbook(EXCEL_PATH)
-    try:
-        sheet = workbook.active
-        existing_prefixes = used_cipher_prefixes(sheet)
-    finally:
-        workbook.close()
+    existing_prefixes: set[str] = set()
+    for client_type in (CLIENT_TYPE_PHYSICAL, CLIENT_TYPE_LEGAL):
+        ensure_excel_file(client_type)
+        workbook = load_workbook(excel_path_for_client_type(client_type))
+        try:
+            sheet = workbook.active
+            existing_prefixes.update(used_cipher_prefixes(sheet))
+        finally:
+            workbook.close()
     active_prefixes = {
         session.get("cipher_prefix", "").upper()
         for session in sender_sessions.values()
@@ -2084,6 +2128,7 @@ async def setup_callback_handler(callback: CallbackQuery) -> None:
 
 def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> list[list[str]]:
     rows = []
+    is_legal = sender.get("client_type") == CLIENT_TYPE_LEGAL
     for customer in customers:
         note = strip_phone_candidates(customer.get("note"))
         normalized_phone, phone_review = normalize_phone_list(
@@ -2104,18 +2149,25 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
         ]
         review = "; ".join(part for part in review_parts if part)
 
-        rows.append(
-            [
-                "",
-                clean_name(customer.get("full_name")),
-                clean_name(customer.get("full_name")),
-                recipient_address,
-                normalized_phone,
-                "",
-                sender["parcel_weight"],
-                note,
-                sender["places_count"],
-                sender["delivery_type"],
+        common_values = [
+            "",
+            clean_name(customer.get("full_name")),
+            clean_name(customer.get("full_name")),
+            recipient_address,
+            normalized_phone,
+            "",
+            sender["parcel_weight"],
+            note,
+            sender["places_count"],
+            sender["delivery_type"],
+        ]
+        if is_legal:
+            row = common_values + [
+                recipient_location,
+                sender["payment_by_receiver"],
+            ]
+        else:
+            row = common_values + [
                 sender["sender_full_name"],
                 sender["sender_full_name"],
                 sender["sender_address"],
@@ -2123,11 +2175,9 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
                 sender["sender_city_ru"],
                 recipient_location,
                 sender["payment_by_receiver"],
-                "",
-                "",
-                review,
             ]
-        )
+        row.append(review)
+        rows.append(row)
     return rows
 
 
@@ -2137,8 +2187,11 @@ async def append_customers(customers: list[dict[str, Any]], sender: dict[str, st
         return 0
 
     async with excel_lock:
-        ensure_excel_file()
-        workbook = load_workbook(EXCEL_PATH)
+        client_type = sender.get("client_type", CLIENT_TYPE_PHYSICAL)
+        path = excel_path_for_client_type(client_type)
+        headers = headers_for_client_type(client_type)
+        ensure_excel_file(client_type)
+        workbook = load_workbook(path)
         try:
             sheet = workbook.active
 
@@ -2146,7 +2199,7 @@ async def append_customers(customers: list[dict[str, Any]], sender: dict[str, st
             next_number = next_row - 1
             next_code_index = next_cipher_index(sheet, sender["cipher_prefix"]) if sender["cipher_prefix"] else 1
             for row in rows:
-                copy_row_style(sheet, 2, next_row)
+                copy_row_style(sheet, 2, next_row, len(headers))
                 row[0] = next_number
                 row[5] = f"{sender['cipher_prefix']}{next_code_index}" if sender["cipher_prefix"] else ""
                 review = row.pop()
@@ -2159,17 +2212,17 @@ async def append_customers(customers: list[dict[str, Any]], sender: dict[str, st
                 if sender["cipher_prefix"]:
                     next_code_index += 1
 
-            workbook.save(EXCEL_PATH)
+            workbook.save(path)
         finally:
             workbook.close()
 
     return len(rows)
 
 
-async def get_excel_bytes() -> bytes:
+async def get_excel_bytes(client_type: str = CLIENT_TYPE_PHYSICAL) -> bytes:
     async with excel_lock:
-        ensure_excel_file()
-        return EXCEL_PATH.read_bytes()
+        ensure_excel_file(client_type)
+        return excel_path_for_client_type(client_type).read_bytes()
 
 
 def parse_openai_output(response: Any) -> list[dict[str, Any]]:
@@ -2482,10 +2535,12 @@ async def ai_handler(message: Message) -> None:
 async def excel_handler(message: Message) -> None:
     if not await ensure_user_access(message):
         return
-    file_bytes = await get_excel_bytes()
+    client_type = current_client_type(message.chat.id)
+    file_bytes = await get_excel_bytes(client_type)
+    filename = excel_path_for_client_type(client_type).name
     await safe_answer_document(
         message,
-        BufferedInputFile(file_bytes, filename="customers.xlsx"),
+        BufferedInputFile(file_bytes, filename=filename),
         caption="Yangilangan mijozlar ro'yxati.",
     )
 
@@ -3132,8 +3187,9 @@ async def handle_service_text(message: Message) -> bool:
 async def clear_handler(message: Message, start_next_setup: bool = True) -> None:
     if not await ensure_user_access(message):
         return
+    client_type = current_client_type(message.chat.id)
     async with excel_lock:
-        reset_excel_file()
+        reset_excel_file(client_type)
     sender_sessions.pop(message.chat.id, None)
     setup_states.pop(message.chat.id, None)
     await safe_answer(
@@ -3255,7 +3311,8 @@ async def main() -> None:
             "OPENAI_API_KEY environment variable sozlanmagan. Railway > Variables bo'limiga OPENAI_API_KEY qo'shing."
         )
 
-    ensure_excel_file()
+    ensure_excel_file(CLIENT_TYPE_PHYSICAL)
+    ensure_excel_file(CLIENT_TYPE_LEGAL)
 
     bot = Bot(token=BOT_TOKEN)
     dispatcher = Dispatcher()
