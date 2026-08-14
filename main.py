@@ -463,6 +463,8 @@ async def get_emu_branches(region_id: int | None = None, city_id: int | None = N
         branches = [branch for branch in branches if region_id_from_item(branch) == int(region_id)]
     if city_id:
         city_filtered = [branch for branch in branches if city_id_from_item(branch) == int(city_id)]
+        if int(city_id) == TASHKENT_CITY_ID and not city_filtered:
+            city_filtered = [branch for branch in branches if region_id_from_item(branch) == TASHKENT_REGION_ID]
         if not city_filtered:
             cities = list(database.get("cities") or [])
             city = next((item for item in cities if int_value(item.get("id")) == int(city_id)), None)
