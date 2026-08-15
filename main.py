@@ -207,6 +207,7 @@ class BatchItem:
     text: str = ""
     file_id: str = ""
     mime_type: str = ""
+    file_name: str = ""
     bot: Bot | None = None
 
 
@@ -1768,6 +1769,9 @@ def region_center_for_location(recipient_location: str) -> str:
 
 def format_recipient_address(value: Any, recipient_location: str, delivery_type: str) -> tuple[str, str]:
     if delivery_type == "ДО ОФИСА":
+        exact_branch_code = branch_code_for_location(recipient_location)
+        if exact_branch_code:
+            return exact_branch_code, ""
         region_center = region_center_for_location(recipient_location)
         branch_code = branch_code_for_location(region_center)
         if branch_code:
@@ -1925,11 +1929,19 @@ LOCATION_ALIASES = {
     "altyaryk": "Алтыарык",
     "andijon": "Андижан",
     "andijan": "Андижан",
+    "andijon izbosgan": "Избаскан",
+    "andijan izbaskan": "Избаскан",
+    "izbosgan": "Избаскан",
+    "izbaskan": "Избаскан",
     "jizzax": "Джизак",
     "jizzakh": "Джизак",
     "djizak": "Джизак",
     "qashqadaryo": "Карши",
     "kashkadarya": "Карши",
+    "qashqadaryo guzor": "Гузар",
+    "qashqadaryo g'uzor": "Гузар",
+    "guzor": "Гузар",
+    "g'uzor": "Гузар",
     "qarshi": "Карши",
     "karshi": "Карши",
     "navoiy": "Навои",
@@ -1955,6 +1967,11 @@ LOCATION_ALIASES = {
     "paxtaobod": "Пахтаабад",
     "paxtaabad": "Пахтаабад",
     "pakhtaabad": "Пахтаабад",
+    "olmaliq": "Алмалык",
+    "almalyk": "Алмалык",
+    "qoqon": "Коканд",
+    "qo'qon": "Коканд",
+    "kokand": "Коканд",
 }
 
 LOCATION_ALIAS_BY_KEY = {
@@ -2825,7 +2842,7 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
             clean_name(customer.get("full_name")),
             recipient_address,
             normalized_phone,
-            "",
+            clean_text(customer.get("source_cipher")),
             sender["parcel_weight"],
             note,
             sender["places_count"],
@@ -2871,7 +2888,12 @@ async def append_customers(customers: list[dict[str, Any]], sender: dict[str, st
             for row in rows:
                 copy_row_style(sheet, 2, next_row, len(headers))
                 row[0] = next_number
-                row[5] = f"{sender['cipher_prefix']}{next_code_index}" if sender["cipher_prefix"] else ""
+                generated_cipher = False
+                if row[5]:
+                    row[5] = clean_text(row[5])
+                else:
+                    row[5] = f"{sender['cipher_prefix']}{next_code_index}" if sender["cipher_prefix"] else ""
+                    generated_cipher = bool(row[5])
                 review = row.pop()
                 if review:
                     row[7] = "; ".join(part for part in [row[7], review] if part)
@@ -2879,7 +2901,7 @@ async def append_customers(customers: list[dict[str, Any]], sender: dict[str, st
                     sheet.cell(next_row, column_index).value = value
                 next_row += 1
                 next_number += 1
-                if sender["cipher_prefix"]:
+                if generated_cipher:
                     next_code_index += 1
 
             workbook.save(path)
@@ -2970,6 +2992,70 @@ def call_openai_with_image(image_bytes: bytes, mime_type: str) -> list[dict[str,
     return parse_openai_output(response)
 
 
+def is_excel_document(file_name: str, mime_type: str) -> bool:
+    lowered_name = clean_text(file_name).casefold()
+    lowered_mime = clean_text(mime_type).casefold()
+    return lowered_name.endswith((".xlsx", ".xlsm")) or lowered_mime in {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel.sheet.macroenabled.12",
+    }
+
+
+def looks_like_excel_header(values: list[str]) -> bool:
+    normalized = [normalize_location_key(value) for value in values]
+    joined = " ".join(normalized)
+    header_words = {"shifr", "cipher", "telefon", "phone", "tel", "ism", "fio", "address", "manzil"}
+    return sum(1 for word in header_words if word in joined) >= 2
+
+
+def extract_customers_from_excel_bytes(file_bytes: bytes) -> list[dict[str, Any]]:
+    workbook = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+    customers: list[dict[str, Any]] = []
+    try:
+        for sheet in workbook.worksheets:
+            for row_index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+                values = [clean_text(value) for value in row]
+                while values and not values[-1]:
+                    values.pop()
+                if not any(values):
+                    continue
+                if row_index == 1 and looks_like_excel_header(values):
+                    continue
+
+                cipher = values[0] if len(values) > 0 else ""
+                phone = values[1] if len(values) > 1 else ""
+                full_name = values[2] if len(values) > 2 else ""
+                address = values[3] if len(values) > 3 else ""
+                extra_values = [value for value in values[4:] if value]
+                if cipher and not any([phone, full_name, address]):
+                    continue
+                if len(values) < 4:
+                    extra_values.append("Excel qatorida 4 ta asosiy ustun to'liq emas")
+
+                if not any([cipher, phone, full_name, address]):
+                    continue
+
+                location = fuzzy_location_from_text(address)
+                customers.append(
+                    {
+                        "number": "",
+                        "source_cipher": cipher,
+                        "full_name": full_name,
+                        "phone": phone,
+                        "address": address,
+                        "recipient_region_ru": location,
+                        "note": "; ".join(extra_values),
+                        "needs_review": "" if address and phone else f"Excel {sheet.title}!{row_index}-qatorni tekshirish kerak",
+                    }
+                )
+    finally:
+        workbook.close()
+
+    if not customers:
+        raise ValueError("Excel faylda mijoz qatorlari topilmadi.")
+    return customers
+
+
 async def handle_customers(message: Message, customers: list[dict[str, Any]]) -> None:
     sender = sender_sessions.get(message.chat.id)
     if sender is None:
@@ -3025,10 +3111,14 @@ async def extract_customers_from_batch_item(item: BatchItem) -> list[dict[str, A
     file = await item.bot.get_file(item.file_id)
     buffer = io.BytesIO()
     await item.bot.download_file(file.file_path, destination=buffer)
-    image_bytes = buffer.getvalue()
+    file_bytes = buffer.getvalue()
+
+    if item.kind == "excel":
+        return await asyncio.to_thread(extract_customers_from_excel_bytes, file_bytes)
+
     return await asyncio.to_thread(
         call_openai_with_image,
-        image_bytes,
+        file_bytes,
         item.mime_type or "image/jpeg",
     )
 
@@ -3157,7 +3247,7 @@ async def start_handler(message: Message) -> None:
     await send_main_menu(
         message,
         "Assalomu alaykum!\n\n"
-        "Bot mijoz ma'lumotlarini matn yoki rasm ichidan ajratib, Excel shablonga yozadi.\n"
+        "Bot mijoz ma'lumotlarini matn, rasm yoki Excel fayldan ajratib, Excel shablonga yozadi.\n"
         "Quyidagi bo'limlardan birini tanlang.",
     )
 
@@ -3201,7 +3291,7 @@ async def help_handler(message: Message) -> None:
         "1. Excel ga yig'ish bo'limiga kiring.\n"
         "2. Yuridik mijoz yoki ФИЗ ЛИЦО yo'nalishini tanlang.\n"
         "3. Bot so'ragan sozlamalarga javob bering.\n"
-        "4. Mijoz ma'lumotlarini matn yoki rasm qilib yuboring.\n"
+        "4. Mijoz ma'lumotlarini matn, rasm yoki .xlsx Excel qilib yuboring.\n"
         "5. Tayyor faylni Arxiv bo'limidan oling.\n\n"
         "Har bir ichki bo'limda Orqaga tugmasi bor.",
         reply_markup=main_menu_keyboard(),
@@ -4018,8 +4108,31 @@ async def document_image_handler(message: Message, bot: Bot) -> None:
         return
 
     document = message.document
-    if document is None or not (document.mime_type or "").startswith("image/"):
-        await safe_answer(message, "Iltimos, rasm yoki mijoz ma'lumotlari yozilgan matn yuboring.")
+    if document is None:
+        await safe_answer(message, "Iltimos, rasm, Excel yoki mijoz ma'lumotlari yozilgan matn yuboring.")
+        return
+
+    file_name = document.file_name or ""
+    mime_type = document.mime_type or ""
+    if is_excel_document(file_name, mime_type):
+        await enqueue_batch_item(
+            BatchItem(
+                kind="excel",
+                message=message,
+                file_id=document.file_id,
+                mime_type=mime_type,
+                file_name=file_name,
+                bot=bot,
+            )
+        )
+        return
+
+    if file_name.casefold().endswith(".xls"):
+        await safe_answer(message, "Excel faylni .xlsx formatida yuboring. Eski .xls format hozir qo'llab-quvvatlanmaydi.")
+        return
+
+    if not mime_type.startswith("image/"):
+        await safe_answer(message, "Iltimos, rasm, .xlsx Excel yoki mijoz ma'lumotlari yozilgan matn yuboring.")
         return
 
     await enqueue_batch_item(
@@ -4027,7 +4140,8 @@ async def document_image_handler(message: Message, bot: Bot) -> None:
             kind="image",
             message=message,
             file_id=document.file_id,
-            mime_type=document.mime_type or "image/jpeg",
+            mime_type=mime_type or "image/jpeg",
+            file_name=file_name,
             bot=bot,
         )
     )
@@ -4036,7 +4150,7 @@ async def document_image_handler(message: Message, bot: Bot) -> None:
 async def unsupported_handler(message: Message) -> None:
     if not await ensure_user_access(message):
         return
-    await safe_answer(message, "Matn yoki rasm yuboring. Yordam uchun /help buyrug'ini bosing.")
+    await safe_answer(message, "Matn, rasm yoki .xlsx Excel yuboring. Yordam uchun /help buyrug'ini bosing.")
 
 
 async def setup_bot_commands(bot: Bot) -> None:
