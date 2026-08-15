@@ -1790,10 +1790,9 @@ def load_branch_codes() -> dict[str, str]:
 
     branch_code_cache = {}
     for record in load_branch_code_records():
-        for value in [record.name, record.parent]:
-            key = normalize_location_key(value)
-            if key and key not in branch_code_cache:
-                branch_code_cache[key] = record.code
+        key = normalize_location_key(record.name)
+        if key and key not in branch_code_cache:
+            branch_code_cache[key] = record.code
 
     return branch_code_cache
 
@@ -1919,17 +1918,11 @@ def branch_code_for_address(recipient_location: str, address: Any) -> tuple[str,
         return "", ""
 
     records = load_branch_code_records()
-    name_candidates = [
+    candidates = [
         record
         for record in records
         if branch_record_field_matches_location(record.name, recipient_location)
     ]
-    parent_candidates = [
-        record
-        for record in records
-        if branch_record_field_matches_location(record.parent, recipient_location)
-    ]
-    candidates = name_candidates or parent_candidates
     if candidates:
         if not address_detail_tokens(address, recipient_location):
             central_candidate = next(
@@ -2081,6 +2074,13 @@ LOCATION_ALIASES = {
     "boka": "Бука",
     "buka": "Бука",
     "buka tumani": "Бука",
+    "ohangaron": "Ахангаран",
+    "ohangaron tumani": "Ахангаран",
+    "ahangaron": "Ахангаран",
+    "ahangaron tumani": "Ахангаран",
+    "axangaron": "Ахангаран",
+    "axangaron tumani": "Ахангаран",
+    "ахангарон": "Ахангаран",
     "zafar": "Бекабад",
     "guliston": "Гулистан",
     "gulistan": "Гулистан",
