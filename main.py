@@ -94,6 +94,7 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 sender_sessions: dict[int, dict[str, str]] = {}
 setup_states: dict[int, dict[str, Any]] = {}
 branch_code_cache: dict[str, str] | None = None
+branch_code_records_cache: list["BranchCodeRecord"] | None = None
 reply_locks: dict[int, asyncio.Lock] = {}
 last_success_notice_at: dict[int, float] = {}
 batch_states: dict[int, "BatchState"] = {}
@@ -216,6 +217,14 @@ class BatchState:
     items: list[BatchItem] = field(default_factory=list)
     task: asyncio.Task | None = None
     last_added_at: float = 0
+
+
+@dataclass
+class BranchCodeRecord:
+    code: str
+    parent: str
+    name: str
+    address: str
 
 
 def load_approved_user_ids() -> set[int]:
@@ -1732,27 +1741,59 @@ def clean_address(value: Any, recipient_location: str) -> str:
     return ""
 
 
-def load_branch_codes() -> dict[str, str]:
-    global branch_code_cache
-    if branch_code_cache is not None:
-        return branch_code_cache
+def load_branch_code_records() -> list[BranchCodeRecord]:
+    global branch_code_records_cache
+    if branch_code_records_cache is not None:
+        return branch_code_records_cache
 
-    branch_code_cache = {}
+    branch_code_records_cache = []
     if not BRANCH_CODES_PATH.exists():
         logger.warning("Branch code file not found: %s", BRANCH_CODES_PATH)
-        return branch_code_cache
+        return branch_code_records_cache
 
     workbook = load_workbook(BRANCH_CODES_PATH, data_only=True)
     try:
         sheet = workbook.active
         for row_index in range(2, sheet.max_row + 1):
             code = clean_text(sheet.cell(row_index, 1).value)
-            city = clean_text(sheet.cell(row_index, 2).value)
-            key = normalize_location_key(city)
-            if code and key and key not in branch_code_cache:
-                branch_code_cache[key] = code
+            if not code:
+                continue
+
+            if sheet.max_column >= 4:
+                parent = clean_text(sheet.cell(row_index, 2).value)
+                name = clean_text(sheet.cell(row_index, 3).value)
+                address = clean_text(sheet.cell(row_index, 4).value)
+            else:
+                parent = ""
+                name = clean_text(sheet.cell(row_index, 2).value)
+                address = ""
+
+            if name:
+                branch_code_records_cache.append(
+                    BranchCodeRecord(
+                        code=code,
+                        parent=parent,
+                        name=name,
+                        address=address,
+                    )
+                )
     finally:
         workbook.close()
+
+    return branch_code_records_cache
+
+
+def load_branch_codes() -> dict[str, str]:
+    global branch_code_cache
+    if branch_code_cache is not None:
+        return branch_code_cache
+
+    branch_code_cache = {}
+    for record in load_branch_code_records():
+        for value in [record.name, record.parent]:
+            key = normalize_location_key(value)
+            if key and key not in branch_code_cache:
+                branch_code_cache[key] = record.code
 
     return branch_code_cache
 
@@ -1763,22 +1804,187 @@ def branch_code_for_location(recipient_location: str) -> str:
     return load_branch_codes().get(normalize_location_key(recipient_location), "")
 
 
+def location_keys_for_location(recipient_location: str) -> set[str]:
+    keys = {normalize_location_key(recipient_location)}
+    keys.update(
+        alias_key
+        for alias_key, location in LOCATION_ALIAS_BY_KEY.items()
+        if location == recipient_location
+    )
+    return {key for key in keys if key}
+
+
+def branch_record_text(record: BranchCodeRecord) -> str:
+    return " ".join([record.parent, record.name, record.address])
+
+
+def branch_record_key(record: BranchCodeRecord) -> str:
+    return normalize_location_key(branch_record_text(record))
+
+
+def branch_record_location_key(record: BranchCodeRecord) -> str:
+    return normalize_location_key(" ".join([record.parent, record.name]))
+
+
+def branch_record_tokens(record: BranchCodeRecord) -> set[str]:
+    return set(location_tokens(branch_record_text(record)))
+
+
+def address_match_tokens(value: Any) -> list[str]:
+    return [
+        token
+        for token in location_tokens(clean_text(value))
+        if token not in {
+            "viloyati",
+            "viloyat",
+            "shahar",
+            "shaxar",
+            "tumani",
+            "tuman",
+            "rayoni",
+            "rayon",
+        }
+    ]
+
+
+def token_matches_location(token: str, recipient_location: str) -> bool:
+    token_key = normalize_location_key(token)
+    keys = location_keys_for_location(recipient_location)
+    if token_key in keys:
+        return True
+    return bool(get_close_matches(token_key, list(keys), n=1, cutoff=0.82))
+
+
+def address_detail_tokens(value: Any, recipient_location: str) -> list[str]:
+    return [
+        token
+        for token in address_match_tokens(value)
+        if not token_matches_location(token, recipient_location)
+    ]
+
+
+def branch_record_matches_location(record: BranchCodeRecord, recipient_location: str) -> bool:
+    record_key = branch_record_location_key(record)
+    for key in location_keys_for_location(recipient_location):
+        if key and (key in record_key or record_key in key):
+            return True
+        match = get_close_matches(key, [record_key], n=1, cutoff=0.86)
+        if match:
+            return True
+    return False
+
+
+def branch_record_field_matches_location(value: str, recipient_location: str) -> bool:
+    field_tokens = location_tokens(value)
+    if field_tokens:
+        first_key = normalize_location_key(field_tokens[0])
+        first_location = LOCATION_ALIAS_BY_KEY.get(first_key) or LOCATION_BY_KEY.get(first_key)
+        if first_location and first_location != recipient_location:
+            return False
+
+    field_key = normalize_location_key(value)
+    for key in location_keys_for_location(recipient_location):
+        if key and (key in field_key or field_key in key):
+            return True
+        if get_close_matches(key, [field_key], n=1, cutoff=0.86):
+            return True
+    return False
+
+
+def branch_record_score(record: BranchCodeRecord, address: Any, recipient_location: str) -> int:
+    record_tokens = branch_record_tokens(record)
+    query_tokens = address_match_tokens(address)
+    location_keys = location_keys_for_location(recipient_location)
+    score = 0
+
+    if normalize_location_key(record.name) in location_keys:
+        score += 30
+    if normalize_location_key(record.parent) in location_keys:
+        score += 20
+
+    for token in query_tokens:
+        if token in record_tokens:
+            score += 12
+            continue
+        if get_close_matches(token, list(record_tokens), n=1, cutoff=0.72):
+            score += 8
+
+    name_tokens = set(location_tokens(record.name))
+    score += 3 * len(name_tokens & set(query_tokens))
+    return score
+
+
+def branch_code_for_address(recipient_location: str, address: Any) -> tuple[str, str]:
+    if not recipient_location:
+        return "", ""
+
+    records = load_branch_code_records()
+    name_candidates = [
+        record
+        for record in records
+        if branch_record_field_matches_location(record.name, recipient_location)
+    ]
+    parent_candidates = [
+        record
+        for record in records
+        if branch_record_field_matches_location(record.parent, recipient_location)
+    ]
+    candidates = name_candidates or parent_candidates
+    if candidates:
+        if not address_detail_tokens(address, recipient_location):
+            central_candidate = next(
+                (
+                    record
+                    for record in candidates
+                    if normalize_location_key(record.name) == normalize_location_key(record.parent)
+                ),
+                None,
+            )
+            if central_candidate:
+                return central_candidate.code, ""
+
+        ranked = sorted(
+            candidates,
+            key=lambda record: (
+                branch_record_score(record, address, recipient_location),
+                -len(record.name),
+            ),
+            reverse=True,
+        )
+        return ranked[0].code, ""
+
+    exact_code = branch_code_for_location(recipient_location)
+    if exact_code:
+        return exact_code, ""
+
+    region_center = region_center_for_location(recipient_location)
+    center_candidates = [
+        record
+        for record in records
+        if branch_record_matches_location(record, region_center)
+    ]
+    if center_candidates:
+        ranked = sorted(
+            center_candidates,
+            key=lambda record: branch_record_score(record, address, region_center),
+            reverse=True,
+        )
+        return ranked[0].code, f"{recipient_location} uchun aniq filial topilmadi, {region_center} markaziy filial kodi qo'yildi"
+
+    center_code = branch_code_for_location(region_center)
+    if center_code:
+        return center_code, f"{recipient_location} uchun aniq filial topilmadi, {region_center} markaziy filial kodi qo'yildi"
+
+    return "", f"{recipient_location} uchun filial kodi topilmadi"
+
+
 def region_center_for_location(recipient_location: str) -> str:
     return REGION_CENTER_BY_LOCATION.get(recipient_location, recipient_location)
 
 
 def format_recipient_address(value: Any, recipient_location: str, delivery_type: str) -> tuple[str, str]:
     if delivery_type == "ДО ОФИСА":
-        exact_branch_code = branch_code_for_location(recipient_location)
-        if exact_branch_code:
-            return exact_branch_code, ""
-        region_center = region_center_for_location(recipient_location)
-        branch_code = branch_code_for_location(region_center)
-        if branch_code:
-            return branch_code, ""
-        if recipient_location:
-            return "", f"{region_center} uchun filial kodi topilmadi"
-        return "", ""
+        return branch_code_for_address(recipient_location, value)
 
     address = clean_text(value)
     if address:
@@ -1932,6 +2138,7 @@ LOCATION_ALIASES = {
     "andijon izbosgan": "Избаскан",
     "andijan izbaskan": "Избаскан",
     "izbosgan": "Избаскан",
+    "izboskan": "Избаскан",
     "izbaskan": "Избаскан",
     "jizzax": "Джизак",
     "jizzakh": "Джизак",
@@ -1971,6 +2178,7 @@ LOCATION_ALIASES = {
     "almalyk": "Алмалык",
     "qoqon": "Коканд",
     "qo'qon": "Коканд",
+    "quqon": "Коканд",
     "kokand": "Коканд",
 }
 
@@ -2102,6 +2310,7 @@ def location_tokens(value: str) -> list[str]:
         "’": "",
         "'": "",
         "`": "",
+        "ozbekiston": "uzbekiston",
     }
     for source, target in replacements.items():
         normalized = normalized.replace(source, target)
