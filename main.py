@@ -1381,8 +1381,8 @@ BUTTON_SETUP_OPTIONS = {
         (MENU_TO_HOME, "НА ДОМ"),
     ],
     "payment_by_receiver": [
-        ("✅ qo'yilsin", "✅ qo'yilsin"),
-        ("⬜ qo'yilmasin", "⬜ qo'yilmasin"),
+        ("✅ Galochka qo'yilsin", "True"),
+        ("⬜ Galochka qo'yilmasin", "False"),
     ],
     "cipher_prefix": [
         (MENU_SKIP, ""),
