@@ -71,7 +71,40 @@ Shundan keyin mijozlar matn yoki rasm qilib yuboriladi. Bot oluvchilarni ajratib
 
 `templates/branch_codes.xlsx` faylidagi `Внутренний код` qiymatlari D ustun uchun ishlatiladi. P ustun o'z nomi bilan qoladi.
 
-`ДО ОФИСА` tanlansa D ustunga aniqlangan viloyat markazining kodi yoziladi. `НА ДОМ` tanlansa D ustunga mijoz yuborgan manzil/oriyentir yoziladi; manzil bo'lmasa aniqlangan tuman nomiga `markazi` qo'shiladi.
+`ДО ОФИСА` tanlansa D ustunga aniqlangan tumandagi ofisning kodi yoziladi (tumanda ofis bo'lmasa - viloyat markazi kodi va izoh). `НА ДОМ` tanlansa D ustunga mijoz yuborgan manzil/oriyentir yoziladi; manzil bo'lmasa aniqlangan tuman nomiga `markazi` qo'shiladi.
+
+## Shahar/tumanni aniqlash
+
+O'zbekistonning barcha 14 viloyati va 198 shahar/tumani `location_data.py` faylida saqlanadi. Ma'lumot EMU API'dan olinadi: har bir tuman uchun o'zbekcha nomi, ruscha nomi, server (справочник) formati va shu tumandagi ofislar.
+
+`locations.py` kelib tushgan matnni shu ro'yxatga uch bosqichda bog'laydi:
+
+1. **Aniq moslik** - to'liq nom (`Denov tumani`, `Денауский район`), qisqa nom (`Denov`, `Денов`), taxallus (`Denau`, `Деноу`, `Beshkapa`).
+2. **Fonetik moslik** - lotin/kirill/ruscha imlo farqlari: `Khiva` = `Xiva` = `Хива`, `Karshi` = `Qarshi`, `Jizzakh` = `Jizzax`.
+3. **Taxminiy moslik** - xato yozilgan nomlar (`Denou tumani` -> `Денау`). Bunda `Tekshirish kerak` ustuniga izoh qo'shiladi.
+
+Qo'shimcha qoidalar:
+
+- Manzildagi ko'cha nomi hudud deb olinmaydi: `Termiz shahri, Sharof Rashidov ko'chasi 242` -> `Термез`.
+- Viloyat nomi kontekst beradi: `Andijon viloyati, Oqoltin` -> `Улугнор`, `Oqoltin tumani` (Sirdaryo) -> `Акалтын`.
+- Faqat viloyat aniqlansa, viloyat markazi qo'yiladi va izoh yoziladi.
+- `Denov` -> `Денау`, `Oltinsoy` -> `Карлук`, `Forish` -> `Янгикишлак` kabi nomi boshqacha tumanlar ham topiladi.
+
+Ro'yxatni yangilash (EMU'da yangi tuman yoki ofis paydo bo'lsa):
+
+```bash
+python tools/refresh_locations.py
+```
+
+Skript `templates/branch_codes.xlsx` bilan EMU API'ni solishtirib `location_data.py` ni qayta yozadi. Qo'lda qo'shiladigan taxalluslar `locations.py` ichidagi `EXTRA_NAMES` va `WEAK_NAMES` jadvallarida turadi.
+
+## Testlar
+
+```bash
+python -m unittest discover -s tests -t .
+```
+
+Testlar `tests/` papkasida: hudud aniqlash (`test_locations.py`), filial kodi (`test_branch_codes.py`) va Excel qatorlari (`test_prepare_rows.py`).
 
 ## O'rnatish
 
