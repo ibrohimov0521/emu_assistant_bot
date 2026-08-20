@@ -8,7 +8,8 @@ Tanlash tartibi:
 1. `location_data.py` da shu tumanga bog'langan ofis(lar) - manzilga eng mos keluvchisi.
 2. Nomi tuman nomiga to'g'ri keladigan ofis (fayl yangilangan, lekin `location_data.py`
    hali yangilanmagan holat uchun zaxira).
-3. Viloyat markazidagi ofis - bu holda izoh qoldiriladi.
+3. Shu tuman/shaharda ofis bo'lmasa bo'sh kod qaytadi; asosiy dastur bu qatorni
+   НА ДОМ qilib, tuman markaziga yozadi.
 """
 
 from __future__ import annotations
@@ -27,8 +28,6 @@ from locations import (
     name_keys_for_server,
     normalize_location_key,
     offices_for_server,
-    region_center_server,
-    region_offices_for_server,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,6 +131,15 @@ def address_match_tokens(value: Any) -> list[str]:
     return [token for token in location_tokens(_text(value)) if token not in ADDRESS_GENERIC_TOKENS]
 
 
+def address_detail_tokens(value: Any, recipient_location: str) -> list[str]:
+    location_keys = name_keys_for_server(recipient_location)
+    return [
+        token
+        for token in address_match_tokens(value)
+        if normalize_location_key(token) not in location_keys
+    ]
+
+
 def branch_record_matches_location(record: BranchCodeRecord, recipient_location: str) -> bool:
     """Filial nomi shu hududning nomlaridan biriga to'g'ri kelsa - True.
 
@@ -183,6 +191,18 @@ def branch_records_for_names(names: tuple[str, ...]) -> list[BranchCodeRecord]:
     return found
 
 
+DEFAULT_BRANCH_CODE_BY_LOCATION = {
+    "Самарканд": "37",
+}
+
+
+def default_branch_record(recipient_location: str, records: list[BranchCodeRecord]) -> BranchCodeRecord | None:
+    code = DEFAULT_BRANCH_CODE_BY_LOCATION.get(recipient_location)
+    if not code:
+        return None
+    return next((record for record in records if record.code == code), None)
+
+
 def branch_code_for_address(recipient_location: str, address: Any) -> tuple[str, str]:
     """Hudud va manzil bo'yicha ДО ОФИСА uchun ichki filial kodini qaytaradi.
 
@@ -200,14 +220,10 @@ def branch_code_for_address(recipient_location: str, address: Any) -> tuple[str,
             if branch_record_matches_location(record, recipient_location)
         ]
 
-    record = best_branch_record(records, address)
+    record = default_branch_record(recipient_location, records) if not address_detail_tokens(address, recipient_location) else None
+    if record is None:
+        record = best_branch_record(records, address)
     if record is not None:
         return record.code, ""
 
-    region_center = region_center_server(recipient_location)
-    record = best_branch_record(branch_records_for_names(region_offices_for_server(recipient_location)), address)
-    if record is not None:
-        note = f"{recipient_location} uchun aniq filial topilmadi, {region_center} filial kodi qo'yildi"
-        return record.code, note
-
-    return "", f"{recipient_location} uchun filial kodi topilmadi"
+    return "", ""

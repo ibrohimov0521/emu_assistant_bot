@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__/
+*.pyc
+mingit/
+MinGit-*.zip
+data/*.xlsx
+data/*.json
+data/users/

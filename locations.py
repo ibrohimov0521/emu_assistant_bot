@@ -282,6 +282,7 @@ EXTRA_NAMES: dict[str, tuple[str, ...]] = {
     "Narpay tumani": ("Oqtosh", "Oktosh"),
     "Oqdaryo tumani": ("Loyish", "Layish", "Oqdaryo"),
     "Pastdarg‘om tumani": ("Juma", "Jumabozor"),
+    "Samarqand shahri": ("Samarqant",),
     "Samarqand tumani": ("Gulobod", "Gulbahor", "Seliski"),
     "Qo‘shrabot tumani": ("Qoshrabod", "Qoshrabot"),
     "Ishtixon tumani": ("Ishtihon",),

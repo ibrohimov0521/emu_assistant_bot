@@ -64,6 +64,9 @@ LEGAL_EXCEL_PATH = DATA_DIR / "customers_legal.xlsx"
 EXCEL_PATH = PHYSICAL_EXCEL_PATH
 APPROVED_USERS_PATH = DATA_DIR / "approved_users.json"
 ACCESS_REQUESTS_PATH = DATA_DIR / "access_requests.json"
+USER_SESSIONS_PATH = DATA_DIR / "user_sessions.json"
+USER_COLLECTIONS_PATH = DATA_DIR / "user_collections.json"
+USERS_DIR = DATA_DIR / "users"
 EMU_DATABASE_PATH = DATA_DIR / "emu_database.json"
 
 HEADERS = [
@@ -267,6 +270,106 @@ def save_access_requests(requests: dict[str, dict[str, Any]]) -> None:
 
 
 access_requests: dict[str, dict[str, Any]] = load_access_requests()
+
+
+def load_json_dict(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as error:
+        logger.warning("JSON file could not be read %s: %s", path, error)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_json_dict(path: Path, data: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_user_sessions() -> dict[int, dict[str, str]]:
+    data = load_json_dict(USER_SESSIONS_PATH)
+    sessions: dict[int, dict[str, str]] = {}
+    for key, value in data.items():
+        if str(key).isdigit() and isinstance(value, dict):
+            sessions[int(key)] = {str(item_key): str(item_value or "").strip() for item_key, item_value in value.items()}
+    return sessions
+
+
+def save_user_sessions() -> None:
+    save_json_dict(USER_SESSIONS_PATH, {str(key): value for key, value in sender_sessions.items()})
+
+
+def load_user_collections() -> dict[str, list[dict[str, Any]]]:
+    data = load_json_dict(USER_COLLECTIONS_PATH)
+    return {key: value for key, value in data.items() if isinstance(value, list)}
+
+
+def save_user_collections() -> None:
+    save_json_dict(USER_COLLECTIONS_PATH, user_collections)
+
+
+def user_dir(chat_id: int) -> Path:
+    path = USERS_DIR / str(chat_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def collection_filename(client_type: str, created_at: datetime) -> str:
+    suffix = "legal" if client_type == CLIENT_TYPE_LEGAL else "physical"
+    return f"{created_at.strftime('%Y%m%d_%H%M%S')}_{suffix}.xlsx"
+
+
+def create_collection_for_chat(chat_id: int, client_type: str, sender_name: str = "") -> dict[str, Any]:
+    created_at = datetime.now()
+    path = user_dir(chat_id) / collection_filename(client_type, created_at)
+    collection = {
+        "path": str(path),
+        "client_type": client_type,
+        "created_at": created_at.isoformat(timespec="seconds"),
+        "sender_name": sender_name,
+        "rows": 0,
+    }
+    user_collections.setdefault(str(chat_id), []).append(collection)
+    save_user_collections()
+    return collection
+
+
+def current_collection(chat_id: int) -> dict[str, Any] | None:
+    session = sender_sessions.get(chat_id) or {}
+    path = clean_text(session.get("excel_path"))
+    if not path:
+        return None
+    for collection in user_collections.get(str(chat_id), []):
+        if clean_text(collection.get("path")) == path:
+            return collection
+    return None
+
+
+def ensure_sender_collection(sender: dict[str, str]) -> Path:
+    chat_id = int(sender.get("chat_id") or 0)
+    session_path = clean_text(sender.get("excel_path"))
+    if session_path:
+        return Path(session_path)
+
+    if chat_id:
+        collection = create_collection_for_chat(
+            chat_id,
+            sender.get("client_type", CLIENT_TYPE_PHYSICAL),
+            sender.get("sender_full_name", ""),
+        )
+        sender["excel_path"] = collection["path"]
+        sender["collection_created_at"] = collection["created_at"]
+        sender_sessions[chat_id] = sender
+        save_user_sessions()
+        return Path(collection["path"])
+
+    return excel_path_for_client_type(sender.get("client_type", CLIENT_TYPE_PHYSICAL))
+
+
+sender_sessions.update(load_user_sessions())
+user_collections: dict[str, list[dict[str, Any]]] = load_user_collections()
 
 
 def empty_emu_database() -> dict[str, Any]:
@@ -1266,7 +1369,12 @@ def headers_for_client_type(client_type: str = CLIENT_TYPE_PHYSICAL) -> list[str
     return LEGAL_HEADERS if client_type == CLIENT_TYPE_LEGAL else HEADERS
 
 
-def excel_path_for_client_type(client_type: str = CLIENT_TYPE_PHYSICAL) -> Path:
+def excel_path_for_client_type(client_type: str = CLIENT_TYPE_PHYSICAL, chat_id: int | None = None) -> Path:
+    if chat_id is not None:
+        session = sender_sessions.get(chat_id) or {}
+        session_path = clean_text(session.get("excel_path"))
+        if session_path:
+            return Path(session_path)
     return LEGAL_EXCEL_PATH if client_type == CLIENT_TYPE_LEGAL else PHYSICAL_EXCEL_PATH
 
 
@@ -1353,9 +1461,10 @@ def ensure_workbook_schema(path: Path, headers: list[str]) -> None:
         workbook.close()
 
 
-def ensure_excel_file(client_type: str = CLIENT_TYPE_PHYSICAL) -> None:
+def ensure_excel_file(client_type: str = CLIENT_TYPE_PHYSICAL, path: Path | None = None) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    path = excel_path_for_client_type(client_type)
+    path = path or excel_path_for_client_type(client_type)
+    path.parent.mkdir(parents=True, exist_ok=True)
     headers = headers_for_client_type(client_type)
     if path.exists():
         ensure_workbook_schema(path, headers)
@@ -1389,11 +1498,11 @@ def ensure_excel_file(client_type: str = CLIENT_TYPE_PHYSICAL) -> None:
     workbook.save(path)
 
 
-def reset_excel_file(client_type: str = CLIENT_TYPE_PHYSICAL) -> None:
-    path = excel_path_for_client_type(client_type)
+def reset_excel_file(client_type: str = CLIENT_TYPE_PHYSICAL, path: Path | None = None) -> None:
+    path = path or excel_path_for_client_type(client_type)
     if path.exists():
         path.unlink()
-    ensure_excel_file(client_type)
+    ensure_excel_file(client_type, path)
 
 
 def normalize_phone(raw_phone: str) -> tuple[str, str]:
@@ -1706,6 +1815,76 @@ def remember_access_user(message: Message, phone: str = "") -> dict[str, Any]:
     return data
 
 
+def record_user_activity(message: Message) -> None:
+    user = message.from_user
+    if user is None:
+        return
+    previous = access_requests.get(str(user.id), {})
+    data = {
+        **previous,
+        "user_id": user.id,
+        "first_name": clean_text(user.first_name),
+        "last_name": clean_text(user.last_name),
+        "username": clean_text(user.username),
+        "phone": clean_text(previous.get("phone")),
+        "last_seen_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    access_requests[str(user.id)] = data
+    save_access_requests(access_requests)
+
+
+def user_activity_status(last_seen_at: Any) -> str:
+    last_seen = clean_text(last_seen_at)
+    if not last_seen:
+        return "faol emas"
+    try:
+        seen_at = datetime.fromisoformat(last_seen)
+    except ValueError:
+        return "faol emas"
+    seconds = (datetime.now() - seen_at).total_seconds()
+    return "faol" if seconds <= 15 * 60 else "faol emas"
+
+
+def format_admin_access_status() -> str:
+    user_ids = {
+        int(user_id)
+        for user_id in access_requests
+        if str(user_id).isdigit()
+    }
+    user_ids.update(approved_user_ids)
+    user_ids.update(sender_sessions)
+
+    if not user_ids:
+        return "Hali foydalanuvchilar yo'q."
+
+    lines = ["Foydalanuvchilar holati:", ""]
+    for user_id in sorted(user_ids):
+        data = access_requests.get(str(user_id), {})
+        full_name = " ".join(
+            part
+            for part in [
+                clean_text(data.get("first_name")),
+                clean_text(data.get("last_name")),
+            ]
+            if part
+        ) or "Ism yo'q"
+        username = f"@{clean_text(data.get('username'))}" if clean_text(data.get("username")) else "username yo'q"
+        phone = clean_text(data.get("phone")) or "telefon yo'q"
+        permission = "admin" if is_admin(user_id) else ("ruxsat bor" if user_id in approved_user_ids else "kutilmoqda")
+        active = user_activity_status(data.get("last_seen_at"))
+        session = "yig'ish faol" if user_id in sender_sessions else "yig'ish yo'q"
+        archives = len(user_collections.get(str(user_id), []))
+        last_seen = clean_text(data.get("last_seen_at")) or "hali ko'rinmagan"
+        lines.append(
+            f"{user_id} | {full_name} | {username}\n"
+            f"Tel: {phone}\n"
+            f"Holat: {permission}, {active}, {session}, arxiv: {archives} ta\n"
+            f"Oxirgi faollik: {last_seen}"
+        )
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 def access_request_text(user_data: dict[str, Any]) -> str:
     full_name = " ".join(
         part
@@ -1774,6 +1953,7 @@ async def request_access(message: Message) -> None:
 async def ensure_user_access(message: Message) -> bool:
     user_id = message.from_user.id if message.from_user else message.chat.id
     if has_bot_access(user_id):
+        record_user_activity(message)
         return True
     await request_access(message)
     return False
@@ -2038,6 +2218,7 @@ async def start_setup(
     chat_id = message.chat.id
     if reset:
         sender_sessions.pop(chat_id, None)
+        save_user_sessions()
     setup_states[chat_id] = {
         "step": start_step,
         "data": initial_data or {"client_type": client_type},
@@ -2078,7 +2259,18 @@ async def save_setup_value_and_advance(
     step_index = state["step"] + 1
 
     if step_index >= len(SETUP_STEPS):
-        sender_sessions[chat_id] = state["data"]
+        session = state["data"]
+        session["chat_id"] = str(chat_id)
+        collection = create_collection_for_chat(
+            chat_id,
+            session.get("client_type", CLIENT_TYPE_PHYSICAL),
+            session.get("sender_full_name", ""),
+        )
+        session["excel_path"] = collection["path"]
+        session["collection_created_at"] = collection["created_at"]
+        sender_sessions[chat_id] = session
+        ensure_excel_file(session.get("client_type", CLIENT_TYPE_PHYSICAL), Path(session["excel_path"]))
+        save_user_sessions()
         setup_states.pop(chat_id, None)
         summary = setup_summary(sender_sessions[chat_id])
         if isinstance(message_or_query, CallbackQuery):
@@ -2164,11 +2356,15 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
             clean_text(customer.get("phone")),
             clean_text(customer.get("note")),
         )
+        delivery_type = sender["delivery_type"]
         recipient_address, branch_code_review = format_recipient_address(
             cleaned_address,
             recipient_location,
-            sender["delivery_type"],
+            delivery_type,
         )
+        if delivery_type == "ДО ОФИСА" and recipient_location and not recipient_address:
+            delivery_type = "НА ДОМ"
+            recipient_address = f"{recipient_location} markazi"
         review_parts = [
             clean_text(customer.get("needs_review")),
             phone_review,
@@ -2187,7 +2383,7 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
             sender["parcel_weight"],
             note,
             sender["places_count"],
-            sender["delivery_type"],
+            delivery_type,
         ]
         if is_legal:
             row = common_values + [
@@ -2216,9 +2412,9 @@ async def append_customers(customers: list[dict[str, Any]], sender: dict[str, st
 
     async with excel_lock:
         client_type = sender.get("client_type", CLIENT_TYPE_PHYSICAL)
-        path = excel_path_for_client_type(client_type)
+        path = ensure_sender_collection(sender)
         headers = headers_for_client_type(client_type)
-        ensure_excel_file(client_type)
+        ensure_excel_file(client_type, path)
         workbook = load_workbook(path)
         try:
             sheet = workbook.active
@@ -2249,13 +2445,19 @@ async def append_customers(customers: list[dict[str, Any]], sender: dict[str, st
         finally:
             workbook.close()
 
+        collection = current_collection(int(sender.get("chat_id") or 0))
+        if collection:
+            collection["rows"] = int(collection.get("rows") or 0) + len(rows)
+            save_user_collections()
+
     return len(rows)
 
 
-async def get_excel_bytes(client_type: str = CLIENT_TYPE_PHYSICAL) -> bytes:
+async def get_excel_bytes(client_type: str = CLIENT_TYPE_PHYSICAL, chat_id: int | None = None) -> bytes:
     async with excel_lock:
-        ensure_excel_file(client_type)
-        return excel_path_for_client_type(client_type).read_bytes()
+        path = excel_path_for_client_type(client_type, chat_id)
+        ensure_excel_file(client_type, path)
+        return path.read_bytes()
 
 
 def parse_openai_output(response: Any) -> list[dict[str, Any]]:
@@ -2666,9 +2868,13 @@ async def ai_handler(message: Message) -> None:
 async def excel_handler(message: Message) -> None:
     if not await ensure_user_access(message):
         return
+    if message.chat.id not in sender_sessions:
+        await safe_answer(message, "Hozircha faol yig'ish fayli yo'q. Avval Excel ga yig'ish bo'limidan yangi yig'ishni boshlang.")
+        return
     client_type = current_client_type(message.chat.id)
-    file_bytes = await get_excel_bytes(client_type)
-    filename = excel_path_for_client_type(client_type).name
+    path = ensure_sender_collection(sender_sessions[message.chat.id])
+    file_bytes = await get_excel_bytes(client_type, message.chat.id)
+    filename = path.name
     await safe_answer_document(
         message,
         BufferedInputFile(file_bytes, filename=filename),
@@ -2963,6 +3169,7 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
 
 
 async def show_collect_menu(message: Message) -> None:
+    service_states[message.chat.id] = {"mode": "collect"}
     await safe_answer(
         message,
         "Jo'natmalarni yig'ish bo'limi.\n\n"
@@ -2974,14 +3181,57 @@ async def show_collect_menu(message: Message) -> None:
 
 
 async def show_archive_menu(message: Message) -> None:
+    service_states[message.chat.id] = {"mode": "archive"}
+    collections = user_collections.get(str(message.chat.id), [])
+    if collections:
+        lines = [
+            "Arxiv bo'limi.",
+            "",
+            f"Saqlangan yig'ishlar: {len(collections)} ta",
+        ]
+        for index, collection in enumerate(collections[-10:], start=max(1, len(collections) - 9)):
+            created = clean_text(collection.get("created_at")) or "sana yo'q"
+            sender = clean_text(collection.get("sender_name")) or "jo'natuvchi ko'rsatilmagan"
+            rows = int(collection.get("rows") or 0)
+            lines.append(f"{index}. {created} | {sender} | {rows} ta qator")
+        lines.append("")
+        lines.append("Excel fayl tugmasi oxirgi 10 ta arxiv faylni yuboradi.")
+        text = "\n".join(lines)
+    else:
+        text = (
+            "Arxiv bo'limi.\n\n"
+            "Hozircha saqlangan Excel yig'ishlar yo'q.\n"
+            "Excel ga yig'ish bo'limidan yangi yig'ishni boshlang."
+        )
     await safe_answer(
         message,
-        "Arxiv bo'limi.\n\n"
-        "Excel fayl - yig'ilgan mijozlar ro'yxatini yuboradi.\n"
-        "Shablon - hozirgi Excel shablonni yuboradi.\n"
-        "Ro'yxatni tozalash - Excel ro'yxatini boshidan boshlaydi.",
+        text,
         reply_markup=archive_menu_keyboard(),
     )
+
+
+async def archive_excel_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
+    collections = user_collections.get(str(message.chat.id), [])
+    existing = [collection for collection in collections if Path(clean_text(collection.get("path"))).exists()]
+    if not existing:
+        await safe_answer(message, "Arxivda Excel fayl topilmadi.", reply_markup=archive_menu_keyboard())
+        return
+    await safe_answer(message, f"Oxirgi {min(10, len(existing))} ta Excel fayl yuborilmoqda.", reply_markup=archive_menu_keyboard())
+    for collection in existing[-10:]:
+        path = Path(clean_text(collection.get("path")))
+        sender_name = clean_text(collection.get("sender_name")) or "ko'rsatilmagan"
+        caption = (
+            f"{clean_text(collection.get('created_at'))}\n"
+            f"Jo'natuvchi: {sender_name}\n"
+            f"Qatorlar: {int(collection.get('rows') or 0)}"
+        )
+        await safe_answer_document(
+            message,
+            BufferedInputFile(path.read_bytes(), filename=path.name),
+            caption=caption,
+        )
 
 
 async def show_settings_menu(message: Message) -> None:
@@ -3040,7 +3290,10 @@ async def handle_menu_message(message: Message) -> bool:
         return True
 
     if text == MENU_EXCEL_FILE:
-        await excel_handler(message)
+        if (service_states.get(message.chat.id) or {}).get("mode") == "archive":
+            await archive_excel_handler(message)
+        else:
+            await excel_handler(message)
         return True
 
     if text == MENU_TEMPLATE_FILE:
@@ -3061,6 +3314,9 @@ async def handle_menu_message(message: Message) -> bool:
 
     if text == MENU_ACCESS_STATUS:
         user_id = message.from_user.id if message.from_user else message.chat.id
+        if is_admin(user_id):
+            await safe_answer(message, format_admin_access_status(), reply_markup=settings_menu_keyboard())
+            return True
         status = "admin" if is_admin(user_id) else "ruxsat berilgan"
         if not ADMIN_IDS:
             status = "ruxsat tekshiruvi o'chirilgan"
@@ -3369,14 +3625,22 @@ async def handle_service_text(message: Message) -> bool:
 async def clear_handler(message: Message, start_next_setup: bool = True) -> None:
     if not await ensure_user_access(message):
         return
-    client_type = current_client_type(message.chat.id)
-    async with excel_lock:
-        reset_excel_file(client_type)
+    had_active_collection = message.chat.id in sender_sessions
+    if not had_active_collection:
+        client_type = current_client_type(message.chat.id)
+        async with excel_lock:
+            reset_excel_file(client_type)
     sender_sessions.pop(message.chat.id, None)
+    save_user_sessions()
     setup_states.pop(message.chat.id, None)
+    text = (
+        "Faol yig'ish yopildi. Excel fayl arxivda saqlanib qoldi."
+        if had_active_collection
+        else "Ro'yxat tozalandi. Yangi Excel fayl shablondan tayyorlanadi."
+    )
     await safe_answer(
         message,
-        "Ro'yxat tozalandi. Yangi Excel fayl shablondan tayyorlanadi.",
+        text,
         reply_markup=archive_menu_keyboard() if not start_next_setup else None,
     )
     if start_next_setup:
