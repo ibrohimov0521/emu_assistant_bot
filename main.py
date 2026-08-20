@@ -10,11 +10,12 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from difflib import get_close_matches
 from copy import copy
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramRetryAfter
@@ -68,6 +69,10 @@ USER_SESSIONS_PATH = DATA_DIR / "user_sessions.json"
 USER_COLLECTIONS_PATH = DATA_DIR / "user_collections.json"
 USERS_DIR = DATA_DIR / "users"
 EMU_DATABASE_PATH = DATA_DIR / "emu_database.json"
+try:
+    APP_TZ = ZoneInfo("Asia/Tashkent")
+except ZoneInfoNotFoundError:
+    APP_TZ = timezone(timedelta(hours=5), name="Asia/Tashkent")
 
 HEADERS = [
     "Номер",
@@ -273,6 +278,34 @@ def save_access_requests(requests: dict[str, dict[str, Any]]) -> None:
     )
 
 
+def now_local() -> datetime:
+    return datetime.now(APP_TZ)
+
+
+def now_local_iso() -> str:
+    return now_local().isoformat(timespec="seconds")
+
+
+def parse_saved_datetime(value: Any) -> datetime | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        saved = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if saved.tzinfo is None:
+        saved = saved.replace(tzinfo=timezone.utc)
+    return saved.astimezone(APP_TZ)
+
+
+def format_saved_datetime(value: Any) -> str:
+    saved = parse_saved_datetime(value)
+    if saved is None:
+        return "hali ko'rinmagan"
+    return saved.strftime("%Y-%m-%d %H:%M")
+
+
 access_requests: dict[str, dict[str, Any]] = load_access_requests()
 approved_from_requests = {
     int(user_id)
@@ -334,7 +367,7 @@ def collection_filename(client_type: str, created_at: datetime) -> str:
 
 
 def create_collection_for_chat(chat_id: int, client_type: str, sender_name: str = "") -> dict[str, Any]:
-    created_at = datetime.now()
+    created_at = now_local()
     path = user_dir(chat_id) / collection_filename(client_type, created_at)
     collection = {
         "path": str(path),
@@ -1253,13 +1286,14 @@ def archive_menu_keyboard() -> ReplyKeyboardMarkup:
 def settings_menu_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:
     admin = is_admin(user_id) if user_id is not None else False
     keyboard = [
-        [KeyboardButton(text=MENU_RESET_SETUP), KeyboardButton(text=MENU_ACCESS_STATUS)],
         [KeyboardButton(text=MENU_CURRENT_TEMPLATES)],
         [KeyboardButton(text=MENU_BACK)],
     ]
     if admin:
-        keyboard.insert(1, [KeyboardButton(text=MENU_USERS_STATUS)])
-        keyboard.insert(2, [KeyboardButton(text=MENU_REFRESH_EMU_DB), KeyboardButton(text=MENU_EMU_DB_STATUS)])
+        keyboard.insert(0, [KeyboardButton(text=MENU_USERS_STATUS)])
+        keyboard.insert(1, [KeyboardButton(text=MENU_REFRESH_EMU_DB), KeyboardButton(text=MENU_EMU_DB_STATUS)])
+    else:
+        keyboard.insert(0, [KeyboardButton(text=MENU_ACCESS_STATUS)])
     return ReplyKeyboardMarkup(
         keyboard=keyboard,
         resize_keyboard=True,
@@ -1848,7 +1882,7 @@ def remember_access_user(message: Message, phone: str = "") -> dict[str, Any]:
         "last_name": clean_text(getattr(user, "last_name", "")),
         "username": clean_text(getattr(user, "username", "")),
         "phone": phone or clean_text(previous.get("phone")),
-        "requested_at": datetime.now().isoformat(timespec="seconds"),
+        "requested_at": now_local_iso(),
     }
     access_requests[str(user_id)] = data
     save_access_requests(access_requests)
@@ -1867,21 +1901,17 @@ def record_user_activity(message: Message) -> None:
         "last_name": clean_text(user.last_name),
         "username": clean_text(user.username),
         "phone": clean_text(previous.get("phone")),
-        "last_seen_at": datetime.now().isoformat(timespec="seconds"),
+        "last_seen_at": now_local_iso(),
     }
     access_requests[str(user.id)] = data
     save_access_requests(access_requests)
 
 
 def user_activity_status(last_seen_at: Any) -> str:
-    last_seen = clean_text(last_seen_at)
-    if not last_seen:
+    seen_at = parse_saved_datetime(last_seen_at)
+    if seen_at is None:
         return "faol emas"
-    try:
-        seen_at = datetime.fromisoformat(last_seen)
-    except ValueError:
-        return "faol emas"
-    seconds = (datetime.now() - seen_at).total_seconds()
+    seconds = (now_local() - seen_at).total_seconds()
     return "faol" if seconds <= 15 * 60 else "faol emas"
 
 
@@ -1914,7 +1944,7 @@ def format_admin_access_status() -> str:
         active = user_activity_status(data.get("last_seen_at"))
         session = "yig'ish faol" if user_id in sender_sessions else "yig'ish yo'q"
         archives = len(user_collections.get(str(user_id), []))
-        last_seen = clean_text(data.get("last_seen_at")) or "hali ko'rinmagan"
+        last_seen = format_saved_datetime(data.get("last_seen_at"))
         lines.append(
             f"{user_id} | {full_name} | {username}\n"
             f"Tel: {phone}\n"
@@ -2053,7 +2083,7 @@ async def access_callback_handler(callback: CallbackQuery) -> None:
     if action == "approve":
         approved_user_ids.add(user_id)
         save_approved_user_ids(approved_user_ids)
-        user_data["approved_at"] = datetime.now().isoformat(timespec="seconds")
+        user_data["approved_at"] = now_local_iso()
         user_data.pop("denied_at", None)
         access_requests[str(user_id)] = user_data
         save_access_requests(access_requests)
@@ -2072,7 +2102,7 @@ async def access_callback_handler(callback: CallbackQuery) -> None:
         approved_user_ids.discard(user_id)
         save_approved_user_ids(approved_user_ids)
         user_data.pop("approved_at", None)
-        user_data["denied_at"] = datetime.now().isoformat(timespec="seconds")
+        user_data["denied_at"] = now_local_iso()
         access_requests[str(user_id)] = user_data
         save_access_requests(access_requests)
         await callback.answer("So'rov rad etildi.")
@@ -3283,13 +3313,23 @@ async def archive_excel_handler(message: Message) -> None:
 
 
 async def show_settings_menu(message: Message) -> None:
+    user_id = message.from_user.id if message.from_user else message.chat.id
+    if is_admin(user_id):
+        text = (
+            "Sozlamalar bo'limi.\n\n"
+            "Userlar holati - foydalanuvchilar ruxsati va faolligini ko'rsatadi.\n"
+            "EMU bazani yangilash - emu.uz'dan filial va shahar ma'lumotlarini qayta oladi.\n"
+            "Joriy shablonlar - hozir ishlatilayotgan Excel shablon fayllarini yuboradi."
+        )
+    else:
+        text = (
+            "Sozlamalar bo'limi.\n\n"
+            "Ruxsat holati - botdan foydalanish ruxsatini ko'rsatadi.\n"
+            "Joriy shablonlar - hozir ishlatilayotgan Excel shablon fayllarini yuboradi."
+        )
     await safe_answer(
         message,
-        "Sozlamalar bo'limi.\n\n"
-        "Jo'natuvchi sozlamalari - ФИЗ ЛИЦО uchun ma'lumotlarni qayta kiritish.\n"
-        "Ruxsat holati - botdan foydalanish ruxsatini ko'rsatadi.\n"
-        "Joriy shablonlar - hozir ishlatilayotgan Excel shablon fayllarini yuboradi.\n"
-        "EMU bazani yangilash - admin uchun, emu.uz'dan yangi filial va shahar ma'lumotlarini oladi.",
+        text,
         reply_markup=settings_keyboard_for_message(message),
     )
 
