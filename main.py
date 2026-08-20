@@ -274,6 +274,14 @@ def save_access_requests(requests: dict[str, dict[str, Any]]) -> None:
 
 
 access_requests: dict[str, dict[str, Any]] = load_access_requests()
+approved_from_requests = {
+    int(user_id)
+    for user_id, data in access_requests.items()
+    if str(user_id).isdigit() and isinstance(data, dict) and data.get("approved_at")
+}
+if approved_from_requests - approved_user_ids:
+    approved_user_ids.update(approved_from_requests)
+    save_approved_user_ids(approved_user_ids)
 
 
 def load_json_dict(path: Path) -> dict[str, Any]:
@@ -815,6 +823,25 @@ def service_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def format_office_phones(value: Any) -> str:
+    phone = clean_text(value)
+    if not phone:
+        return "ko'rsatilmagan"
+    parts = [part.strip() for part in re.split(r"[,;/]+", phone) if part.strip()]
+    formatted: list[str] = []
+    for part in parts or [phone]:
+        digits = re.sub(r"\D", "", part)
+        if part.startswith("+"):
+            formatted.append(part)
+        elif len(digits) == 12 and digits.startswith("998"):
+            formatted.append(f"+{digits}")
+        elif len(digits) == 9:
+            formatted.append(f"+998{digits}")
+        else:
+            formatted.append(part)
+    return ", ".join(formatted)
+
+
 def format_branch_card(branch: dict[str, Any], index: int) -> str:
     schedule = branch.get("work_schedule") or []
     active_days = [day for day in schedule if day.get("is_active")]
@@ -823,7 +850,7 @@ def format_branch_card(branch: dict[str, Any], index: int) -> str:
         first = active_days[0]
         work_time = f"{clean_text(first.get('start_time'))[:5]}-{clean_text(first.get('end_time'))[:5]}"
     open_status = "🟢 ochiq" if branch.get("is_open_now") else "🔴 yopiq"
-    phone = clean_text(branch.get("phone")) or "ko'rsatilmagan"
+    phone = format_office_phones(branch.get("phone"))
     address_parts = [clean_text(branch.get("address")), clean_text(branch.get("address_ref"))]
     address = " | ".join(part for part in address_parts if part)
     region = clean_text(branch.get("region_name")) or clean_text(branch.get("_region_name"))
@@ -1215,7 +1242,7 @@ def collect_menu_keyboard() -> ReplyKeyboardMarkup:
 def archive_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=MENU_EXCEL_FILE), KeyboardButton(text=MENU_TEMPLATE_FILE)],
+            [KeyboardButton(text=MENU_EXCEL_FILE)],
             [KeyboardButton(text=MENU_CLEAR)],
             [KeyboardButton(text=MENU_BACK)],
         ],
@@ -2026,6 +2053,10 @@ async def access_callback_handler(callback: CallbackQuery) -> None:
     if action == "approve":
         approved_user_ids.add(user_id)
         save_approved_user_ids(approved_user_ids)
+        user_data["approved_at"] = datetime.now().isoformat(timespec="seconds")
+        user_data.pop("denied_at", None)
+        access_requests[str(user_id)] = user_data
+        save_access_requests(access_requests)
         await callback.answer("Ruxsat berildi.")
         if callback.message:
             await callback.message.edit_text(access_request_text(user_data) + "\n\n✅ Ruxsat berildi.")
@@ -2040,6 +2071,10 @@ async def access_callback_handler(callback: CallbackQuery) -> None:
     if action == "deny":
         approved_user_ids.discard(user_id)
         save_approved_user_ids(approved_user_ids)
+        user_data.pop("approved_at", None)
+        user_data["denied_at"] = datetime.now().isoformat(timespec="seconds")
+        access_requests[str(user_id)] = user_data
+        save_access_requests(access_requests)
         await callback.answer("So'rov rad etildi.")
         if callback.message:
             await callback.message.edit_text(access_request_text(user_data) + "\n\n⛔️ So'rov rad etildi.")
