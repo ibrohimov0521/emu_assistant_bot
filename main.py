@@ -132,6 +132,7 @@ MENU_CURRENT_TEMPLATES = "📑 Joriy shablonlar"
 MENU_CLEAR = "🧹 Ro'yxatni tozalash"
 MENU_RESET_SETUP = "✏️ Jo'natuvchi sozlamalari"
 MENU_ACCESS_STATUS = "🔐 Ruxsat holati"
+MENU_USERS_STATUS = "👥 Userlar holati"
 MENU_REFRESH_EMU_DB = "🔄 EMU bazani yangilash"
 MENU_EMU_DB_STATUS = "📚 EMU baza holati"
 MENU_NEXT_PAGE = "➡️ Keyingi"
@@ -157,6 +158,7 @@ MENU_TEXTS = {
     MENU_CLEAR,
     MENU_RESET_SETUP,
     MENU_ACCESS_STATUS,
+    MENU_USERS_STATUS,
     MENU_REFRESH_EMU_DB,
     MENU_EMU_DB_STATUS,
     "Excel ga yig'ish",
@@ -174,6 +176,7 @@ MENU_TEXTS = {
     "Ro'yxatni tozalash",
     "Jo'natuvchi sozlamalari",
     "Ruxsat holati",
+    "Userlar holati",
     "EMU bazani yangilash",
     "EMU baza holati",
 }
@@ -203,6 +206,7 @@ MENU_ALIASES = {
     "Ro'yxatni tozalash": MENU_CLEAR,
     "Jo'natuvchi sozlamalari": MENU_RESET_SETUP,
     "Ruxsat holati": MENU_ACCESS_STATUS,
+    "Userlar holati": MENU_USERS_STATUS,
     "EMU bazani yangilash": MENU_REFRESH_EMU_DB,
     "EMU baza holati": MENU_EMU_DB_STATUS,
 }
@@ -1222,7 +1226,8 @@ def archive_menu_keyboard() -> ReplyKeyboardMarkup:
 def settings_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=MENU_RESET_SETUP), KeyboardButton(text=MENU_ACCESS_STATUS)],
+            [KeyboardButton(text=MENU_RESET_SETUP), KeyboardButton(text=MENU_USERS_STATUS)],
+            [KeyboardButton(text=MENU_ACCESS_STATUS)],
             [KeyboardButton(text=MENU_REFRESH_EMU_DB), KeyboardButton(text=MENU_EMU_DB_STATUS)],
             [KeyboardButton(text=MENU_CURRENT_TEMPLATES)],
             [KeyboardButton(text=MENU_BACK)],
@@ -3312,7 +3317,7 @@ async def handle_menu_message(message: Message) -> bool:
         await start_setup(message, reset=True, client_type=CLIENT_TYPE_PHYSICAL)
         return True
 
-    if text == MENU_ACCESS_STATUS:
+    if text in {MENU_ACCESS_STATUS, MENU_USERS_STATUS}:
         user_id = message.from_user.id if message.from_user else message.chat.id
         if is_admin(user_id):
             await safe_answer(message, format_admin_access_status(), reply_markup=settings_menu_keyboard())
