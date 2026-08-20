@@ -1223,17 +1223,25 @@ def archive_menu_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def settings_menu_keyboard() -> ReplyKeyboardMarkup:
+def settings_menu_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:
+    admin = is_admin(user_id) if user_id is not None else False
+    keyboard = [
+        [KeyboardButton(text=MENU_RESET_SETUP), KeyboardButton(text=MENU_ACCESS_STATUS)],
+        [KeyboardButton(text=MENU_CURRENT_TEMPLATES)],
+        [KeyboardButton(text=MENU_BACK)],
+    ]
+    if admin:
+        keyboard.insert(1, [KeyboardButton(text=MENU_USERS_STATUS)])
+        keyboard.insert(2, [KeyboardButton(text=MENU_REFRESH_EMU_DB), KeyboardButton(text=MENU_EMU_DB_STATUS)])
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=MENU_RESET_SETUP), KeyboardButton(text=MENU_USERS_STATUS)],
-            [KeyboardButton(text=MENU_ACCESS_STATUS)],
-            [KeyboardButton(text=MENU_REFRESH_EMU_DB), KeyboardButton(text=MENU_EMU_DB_STATUS)],
-            [KeyboardButton(text=MENU_CURRENT_TEMPLATES)],
-            [KeyboardButton(text=MENU_BACK)],
-        ],
+        keyboard=keyboard,
         resize_keyboard=True,
     )
+
+
+def settings_keyboard_for_message(message: Message) -> ReplyKeyboardMarkup:
+    user_id = message.from_user.id if message.from_user else message.chat.id
+    return settings_menu_keyboard(user_id)
 
 
 def collect_active_keyboard() -> ReplyKeyboardMarkup:
@@ -2907,13 +2915,13 @@ async def current_templates_handler(message: Message) -> None:
 
     template_files = sorted(TEMPLATE_DIR.glob("*.xlsx"))
     if not template_files:
-        await safe_answer(message, "Joriy shablon fayllari topilmadi.", reply_markup=settings_menu_keyboard())
+        await safe_answer(message, "Joriy shablon fayllari topilmadi.", reply_markup=settings_keyboard_for_message(message))
         return
 
     await safe_answer(
         message,
         f"📑 Joriy shablonlar yuborilmoqda: {len(template_files)} ta fayl.",
-        reply_markup=settings_menu_keyboard(),
+        reply_markup=settings_keyboard_for_message(message),
     )
     for path in template_files:
         await safe_answer_document(
@@ -2952,14 +2960,14 @@ async def refresh_emu_database_handler(message: Message) -> None:
         return
     user_id = message.from_user.id if message.from_user else message.chat.id
     if not is_admin(user_id):
-        await safe_answer(message, "Bu amal faqat admin uchun.", reply_markup=settings_menu_keyboard())
+        await safe_answer(message, "Bu amal faqat admin uchun.", reply_markup=settings_keyboard_for_message(message))
         return
 
     status_message = await safe_answer(
         message,
         "🔄 EMU bazasi yangilanmoqda...\n\n"
         "Bu jarayonda bot emu.uz API'dan viloyat, tuman/shahar va ofislar ro'yxatini qayta oladi.",
-        reply_markup=settings_menu_keyboard(),
+        reply_markup=settings_keyboard_for_message(message),
     )
     try:
         database = await refresh_emu_database()
@@ -3247,7 +3255,7 @@ async def show_settings_menu(message: Message) -> None:
         "Ruxsat holati - botdan foydalanish ruxsatini ko'rsatadi.\n"
         "Joriy shablonlar - hozir ishlatilayotgan Excel shablon fayllarini yuboradi.\n"
         "EMU bazani yangilash - admin uchun, emu.uz'dan yangi filial va shahar ma'lumotlarini oladi.",
-        reply_markup=settings_menu_keyboard(),
+        reply_markup=settings_keyboard_for_message(message),
     )
 
 
@@ -3320,16 +3328,16 @@ async def handle_menu_message(message: Message) -> bool:
     if text in {MENU_ACCESS_STATUS, MENU_USERS_STATUS}:
         user_id = message.from_user.id if message.from_user else message.chat.id
         if is_admin(user_id):
-            await safe_answer(message, format_admin_access_status(), reply_markup=settings_menu_keyboard())
+            await safe_answer(message, format_admin_access_status(), reply_markup=settings_keyboard_for_message(message))
             return True
         status = "admin" if is_admin(user_id) else "ruxsat berilgan"
         if not ADMIN_IDS:
             status = "ruxsat tekshiruvi o'chirilgan"
-        await safe_answer(message, f"Ruxsat holati: {status}", reply_markup=settings_menu_keyboard())
+        await safe_answer(message, f"Ruxsat holati: {status}", reply_markup=settings_keyboard_for_message(message))
         return True
 
     if text == MENU_EMU_DB_STATUS:
-        await safe_answer(message, format_emu_database_status(), reply_markup=settings_menu_keyboard())
+        await safe_answer(message, format_emu_database_status(), reply_markup=settings_keyboard_for_message(message))
         return True
 
     if text == MENU_REFRESH_EMU_DB:
@@ -3826,3 +3834,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped")
+
