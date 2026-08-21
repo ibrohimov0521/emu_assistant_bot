@@ -472,7 +472,7 @@ REGION_EXTRA_NAMES: dict[int, tuple[str, ...]] = {
     3: ("Fergana", "Fargona", "Fargʻona"),
     4: ("Jizzakh", "Djizak", "Jizzax"),
     5: ("Kashkadarya", "Qashqadaryo", "Kashkadaryo"),
-    6: ("Khorezm", "Xorazm", "Horazm"),
+    6: ("Khorezm", "Xorazm", "Horazm", "Xorazim", "Xorezm"),
     7: ("Namangan",),
     8: ("Navoi", "Navoiy"),
     9: (
@@ -691,11 +691,14 @@ def _region_hints(words: list[str]) -> set[int]:
         region_id = _region_index.get(key)
         if region_id is None:
             continue
+        previous = words[start - 1] if start > 0 else ""
         following = words[start + size] if start + size < len(words) else ""
         if following in DISTRICT_MARKERS:
             # "Toshkent tumani" - bu viloyat emas, tuman nomi.
             continue
-        if size > 1 or following in REGION_MARKERS or normalize_location_key(REGION_BY_ID[region_id].uz) == key:
+        if previous in STREET_PREFIX_MARKERS or following in STREET_SUFFIX_MARKERS:
+            continue
+        if size > 1 or following in REGION_MARKERS or key in _region_index:
             hints.add(region_id)
     return hints
 

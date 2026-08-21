@@ -1885,6 +1885,15 @@ async def safe_answer_document(message: Message, document: BufferedInputFile, **
                 await asyncio.sleep(error.retry_after + 1)
 
 
+async def safe_answer_photo(message: Message, photo: Any, **kwargs: Any) -> Any:
+    async with chat_reply_lock(message.chat.id):
+        while True:
+            try:
+                return await message.answer_photo(photo, **kwargs)
+            except TelegramRetryAfter as error:
+                await asyncio.sleep(error.retry_after + 1)
+
+
 async def safe_edit_text(message: Message, text: str, **kwargs: Any) -> None:
     async with chat_reply_lock(message.chat.id):
         while True:
@@ -2745,6 +2754,16 @@ def parse_openai_output(response: Any) -> list[dict[str, Any]]:
     return [item for item in customers if isinstance(item, dict)]
 
 
+def customers_have_meaningful_data(customers: list[dict[str, Any]]) -> bool:
+    for customer in customers:
+        if any(
+            clean_text(customer.get(field))
+            for field in ("full_name", "phone", "address", "recipient_region_ru", "declared_price", "product_name")
+        ):
+            return True
+    return False
+
+
 def contains_cyrillic(text: str) -> bool:
     return any("\u0400" <= char <= "\u04FF" for char in text)
 
@@ -2860,42 +2879,59 @@ def call_openai_with_text(text: str) -> list[dict[str, Any]]:
 
 
 def call_openai_with_image(image_bytes: bytes, mime_type: str) -> list[dict[str, Any]]:
+    attempts: list[tuple[bytes, str, str]] = []
     processed_bytes, processed_mime = preprocess_image_bytes(image_bytes, mime_type)
-    encoded = base64.b64encode(processed_bytes).decode("utf-8")
-    data_url = f"data:{processed_mime};base64,{encoded}"
+    attempts.append(
+        (
+            processed_bytes,
+            processed_mime,
+            "Rasmdagi mijoz ma'lumotlarini maksimal aniqlik bilan o'qing va ajrating. "
+            "Qo'lda yozilgan, kirill, ruscha va aralash matn bo'lsa ham ehtiyotkor o'qing. "
+            "Telefonlarni alohida ajrating, manzilga narx yoki tovar tavsifini qo'shmang.",
+        )
+    )
+    attempts.append(
+        (
+            image_bytes,
+            mime_type or "image/jpeg",
+            "Agar oldingi urinishda ayrim joylar noaniq bo'lsa, bu safar ayniqsa ism, telefon, manzil va tuman/shaharni "
+            "qayta tekshirib ajrating. Qo'lda yozilgan yoki screenshot matnni ham diqqat bilan o'qing.",
+        )
+    )
 
-    response = call_openai_response(
-        model=OPENAI_MODEL,
-        input=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
+    last_error: Exception | None = None
+    for candidate_bytes, candidate_mime, prompt_text in attempts:
+        try:
+            encoded = base64.b64encode(candidate_bytes).decode("utf-8")
+            data_url = f"data:{candidate_mime};base64,{encoded}"
+            response = call_openai_response(
+                model=OPENAI_MODEL,
+                input=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
                     {
-                        "type": "input_text",
-                        "text": (
-                            "Rasmdagi mijoz ma'lumotlarini maksimal aniqlik bilan o'qing va ajrating. "
-                            "Qo'lda yozilgan, kirill, ruscha va aralash matn bo'lsa ham ehtiyotkor o'qing. "
-                            "Telefonlarni alohida ajrating, manzilga narx yoki tovar tavsifini qo'shmang."
-                        ),
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": data_url,
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt_text},
+                            {"type": "input_image", "image_url": data_url},
+                        ],
                     },
                 ],
-            },
-        ],
-        text={
-            "format": {
-                "type": "json_schema",
-                "name": "customer_extraction",
-                "schema": CUSTOMER_SCHEMA,
-                "strict": True,
-            }
-        },
-    )
-    return parse_openai_output(response)
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "customer_extraction",
+                        "schema": CUSTOMER_SCHEMA,
+                        "strict": True,
+                    }
+                },
+            )
+            customers = parse_openai_output(response)
+            if customers and customers_have_meaningful_data(customers):
+                return customers
+            last_error = RuntimeError("Rasm ichidan yetarli ma'lumot ajratilmadi")
+        except Exception as error:
+            last_error = error
+    raise RuntimeError(str(last_error or "Rasm tahlilida xatolik"))
 
 
 def is_excel_document(file_name: str, mime_type: str) -> bool:
@@ -3047,6 +3083,26 @@ def batch_item_kind_label(item: BatchItem) -> str:
     return "matn"
 
 
+async def send_failed_batch_item(item: BatchItem, reason: str) -> None:
+    caption = f"⚠️ Shu ma'lumotni Excelga yig'ib bo'lmadi.\nSabab: {reason}"
+    try:
+        if item.kind == "text":
+            text = clean_text(item.text)
+            preview = text if len(text) <= 3000 else text[:3000] + "..."
+            await safe_answer(
+                item.message,
+                f"{caption}\n\n📄 Xabar matni:\n{preview}",
+            )
+            return
+        if item.kind == "image":
+            await safe_answer_photo(item.message, item.file_id, caption=caption)
+            return
+        await item.message.answer_document(item.file_id, caption=caption)
+    except Exception as error:
+        logger.warning("Failed to send failed batch item back to chat: %s", error)
+        await safe_answer(item.message, caption)
+
+
 def batch_progress_text(total: int, processed: int, added: int, errors: list[str]) -> str:
     return (
         f"📥 {total} ta xabar qabul qilindi\n"
@@ -3134,6 +3190,7 @@ async def process_batch(chat_id: int) -> None:
             extracted_by_index[index - 1] = customers
         if error:
             errors.append(error)
+            await send_failed_batch_item(items[index - 1], error)
 
         now = asyncio.get_running_loop().time()
         if processed_total == len(items) or now - last_progress_edit_at >= BATCH_PROGRESS_EDIT_INTERVAL_SECONDS:
@@ -3143,17 +3200,16 @@ async def process_batch(chat_id: int) -> None:
                 batch_progress_text(len(items), processed_total, added_total, errors),
             )
 
-    customers_to_append = [
-        customer
-        for customers in extracted_by_index
-        for customer in customers
-    ]
-    if customers_to_append:
+    for item, customers in zip(items, extracted_by_index):
+        if not customers:
+            continue
         try:
-            added_total = await append_customers(customers_to_append, sender)
+            added_total += await append_customers(customers, sender)
         except Exception as error:
             logger.exception("Batch append failed")
-            errors.append(f"Excelga yozishda xatolik: {error}")
+            message_text = f"Excelga yozishda xatolik: {error}"
+            errors.append(f"{batch_item_kind_label(item)}: {message_text}")
+            await send_failed_batch_item(item, message_text)
 
     await safe_edit_text(
         progress_message,
