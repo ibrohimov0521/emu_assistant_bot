@@ -32,8 +32,9 @@ from aiogram.types import (
     ReplyKeyboardRemove,
 )
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import APIConnectionError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
 from openpyxl import Workbook, load_workbook
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from branch_codes import branch_code_for_address
 from locations import (
@@ -159,8 +160,11 @@ emu_database_lock = asyncio.Lock()
 SUCCESS_NOTICE_INTERVAL_SECONDS = 12
 BATCH_IDLE_SECONDS = 3
 BATCH_CONCURRENCY = max(1, int(os.getenv("BATCH_CONCURRENCY", "10")))
+BATCH_IMAGE_CONCURRENCY = max(1, int(os.getenv("BATCH_IMAGE_CONCURRENCY", "3")))
 BATCH_PROGRESS_EDIT_INTERVAL_SECONDS = 1.5
 ACCESS_REQUEST_INTERVAL_SECONDS = 60
+OPENAI_MAX_RETRIES = max(1, int(os.getenv("OPENAI_MAX_RETRIES", "4")))
+OPENAI_RETRY_BASE_SECONDS = max(1, int(os.getenv("OPENAI_RETRY_BASE_SECONDS", "2")))
 
 MENU_COLLECT = "📥 Excel ga yig'ish"
 MENU_OFFICES = "🏢 Ofislar ro'yxati"
@@ -1462,6 +1466,8 @@ CUSTOMER_SCHEMA: dict[str, Any] = {
 SYSTEM_PROMPT = """
 Siz mijoz ma'lumotlarini ajratadigan yordamchisiz.
 Matn yoki rasmda bir nechta mijoz bo'lishi mumkin. Har bir mijozni alohida obyekt qiling.
+Matn o'zbek lotin, o'zbek kirill, rus tili yoki aralash yozuvda bo'lishi mumkin.
+Qo'lda yozilgan, xira, skrinshot yoki forward xabar bo'lsa ham ehtiyotkorlik bilan o'qing.
 
 Ajratiladigan maydonlar:
 - number: asl tartib raqami bor bo'lsa, aks holda bo'sh string
@@ -1490,6 +1496,7 @@ Qoidalar:
 - "Samarqand viloyati Paxtachi tumani" bo'lsa recipient_region_ru uchun "Пахтачи" yozing.
 - Tuman yoki shahar nomi viloyatdan muhimroq: "Farg'ona viloyati Oltiariq tumani" uchun "Фергана" emas, "Алтыарык" yozing.
 - Lotin yozuvidagi O'zbekcha nomlarni ruscha ro'yxatga moslang: Qorako'l -> Каракуль, Qo'rg'ontepa -> Кургантепа, Bo'ka -> Бука, Tayloq -> Тайлак.
+- Ruscha yoki kirillcha yozilgan ism, manzil va izohlarni yo'qotmang; mazmunini to'g'ri maydonga joylang.
 - Javob faqat schema bo'yicha bo'lsin.
 """.strip().format(location_list=LOCATION_LIST_FOR_PROMPT)
 
@@ -2738,11 +2745,100 @@ def parse_openai_output(response: Any) -> list[dict[str, Any]]:
     return [item for item in customers if isinstance(item, dict)]
 
 
-def call_openai_with_text(text: str) -> list[dict[str, Any]]:
+def contains_cyrillic(text: str) -> bool:
+    return any("\u0400" <= char <= "\u04FF" for char in text)
+
+
+def preferred_answer_style(question: str) -> str:
+    text = clean_text(question)
+    lowered = text.casefold()
+    if contains_cyrillic(text):
+        if any(word in lowered for word in ["нима", "қанча", "қайер", "qayer", "нечта", "борми"]):
+            return "uz_cyrillic"
+        return "russian"
+    return "uz_latin"
+
+
+def ai_answer_style_instruction(question: str) -> str:
+    style = preferred_answer_style(question)
+    if style == "uz_cyrillic":
+        return (
+            "Жавобни ўзбекча кириллда беринг. Қисқа, тушунарли ва тартибли бўлсин. "
+            "1 та қисқа хулоса абзаци ва керак бўлса кейин алоҳида пунктлар қилинг."
+        )
+    if style == "russian":
+        return (
+            "Ответ давайте по-русски. Коротко, ясно и аккуратно. "
+            "Сначала 1 короткий абзац с выводом, затем при необходимости список."
+        )
+    return (
+        "Javobni o'zbek lotinda bering. Qisqa, tushunarli va tartibli bo'lsin. "
+        "Avval 1 qisqa xulosa abzasi, keyin kerak bo'lsa punktlar bilan davom eting."
+    )
+
+
+def preprocess_image_bytes(image_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image = ImageOps.exif_transpose(image)
+            image = image.convert("L")
+            image = ImageOps.autocontrast(image)
+            image = ImageEnhance.Contrast(image).enhance(1.35)
+            image = image.filter(ImageFilter.SHARPEN)
+
+            max_side = max(image.size)
+            if max_side > 2200:
+                scale = 2200 / max_side
+                image = image.resize(
+                    (max(1, int(image.width * scale)), max(1, int(image.height * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=88, optimize=True)
+            return output.getvalue(), "image/jpeg"
+    except Exception as error:
+        logger.debug("Image preprocessing skipped: %s", error)
+        return image_bytes, mime_type or "image/jpeg"
+
+
+def openai_retry_delay(attempt: int, retry_after: float | None = None) -> float:
+    if retry_after and retry_after > 0:
+        return retry_after + 0.5
+    return float(OPENAI_RETRY_BASE_SECONDS * attempt)
+
+
+def call_openai_response(**kwargs: Any) -> Any:
     if openai_client is None:
         raise RuntimeError("OPENAI_API_KEY environment variable sozlanmagan.")
 
-    response = openai_client.responses.create(
+    last_error: Exception | None = None
+    for attempt in range(1, OPENAI_MAX_RETRIES + 1):
+        try:
+            return openai_client.responses.create(**kwargs)
+        except RateLimitError as error:
+            last_error = error
+            if attempt >= OPENAI_MAX_RETRIES:
+                break
+            retry_after = getattr(error, "retry_after", None)
+            delay = openai_retry_delay(attempt, retry_after)
+            logger.warning("OpenAI rate limit, retrying in %.1fs (attempt %s/%s)", delay, attempt, OPENAI_MAX_RETRIES)
+            time.sleep(delay)
+        except (APIConnectionError, APITimeoutError, InternalServerError) as error:
+            last_error = error
+            if attempt >= OPENAI_MAX_RETRIES:
+                break
+            delay = openai_retry_delay(attempt)
+            logger.warning("OpenAI temporary error, retrying in %.1fs (attempt %s/%s): %s", delay, attempt, OPENAI_MAX_RETRIES, error)
+            time.sleep(delay)
+        except Exception as error:
+            last_error = error
+            break
+    raise RuntimeError(f"OpenAI so'rovi muvaffaqiyatsiz tugadi: {last_error}")
+
+
+def call_openai_with_text(text: str) -> list[dict[str, Any]]:
+    response = call_openai_response(
         model=OPENAI_MODEL,
         input=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -2764,13 +2860,11 @@ def call_openai_with_text(text: str) -> list[dict[str, Any]]:
 
 
 def call_openai_with_image(image_bytes: bytes, mime_type: str) -> list[dict[str, Any]]:
-    if openai_client is None:
-        raise RuntimeError("OPENAI_API_KEY environment variable sozlanmagan.")
+    processed_bytes, processed_mime = preprocess_image_bytes(image_bytes, mime_type)
+    encoded = base64.b64encode(processed_bytes).decode("utf-8")
+    data_url = f"data:{processed_mime};base64,{encoded}"
 
-    encoded = base64.b64encode(image_bytes).decode("utf-8")
-    data_url = f"data:{mime_type};base64,{encoded}"
-
-    response = openai_client.responses.create(
+    response = call_openai_response(
         model=OPENAI_MODEL,
         input=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -2779,7 +2873,11 @@ def call_openai_with_image(image_bytes: bytes, mime_type: str) -> list[dict[str,
                 "content": [
                     {
                         "type": "input_text",
-                        "text": "Rasmdagi mijoz ma'lumotlarini maksimal aniqlik bilan o'qing va ajrating.",
+                        "text": (
+                            "Rasmdagi mijoz ma'lumotlarini maksimal aniqlik bilan o'qing va ajrating. "
+                            "Qo'lda yozilgan, kirill, ruscha va aralash matn bo'lsa ham ehtiyotkor o'qing. "
+                            "Telefonlarni alohida ajrating, manzilga narx yoki tovar tavsifini qo'shmang."
+                        ),
                     },
                     {
                         "type": "input_image",
@@ -2941,9 +3039,17 @@ async def extract_customers_from_batch_item(item: BatchItem) -> list[dict[str, A
     )
 
 
+def batch_item_kind_label(item: BatchItem) -> str:
+    if item.kind == "image":
+        return "rasm"
+    if item.kind == "excel":
+        return "excel"
+    return "matn"
+
+
 def batch_progress_text(total: int, processed: int, added: int, errors: list[str]) -> str:
     return (
-        f"{total} ta ma'lumot qabul qilindi\n"
+        f"📥 {total} ta xabar qabul qilindi\n"
         f"{processed}/{total} tahlil qilindi\n"
         f"Excelga qo'shilgan mijozlar: {added}\n"
         f"Xatoliklar: {len(errors)}"
@@ -3001,9 +3107,11 @@ async def process_batch(chat_id: int) -> None:
         batch_states.pop(chat_id, None)
         return
 
-    semaphore = asyncio.Semaphore(BATCH_CONCURRENCY)
+    generic_semaphore = asyncio.Semaphore(BATCH_CONCURRENCY)
+    image_semaphore = asyncio.Semaphore(BATCH_IMAGE_CONCURRENCY)
 
     async def extract_with_index(index: int, item: BatchItem) -> tuple[int, list[dict[str, Any]] | None, str | None]:
+        semaphore = image_semaphore if item.kind == "image" else generic_semaphore
         async with semaphore:
             try:
                 customers = await extract_customers_from_batch_item(item)
@@ -3012,7 +3120,7 @@ async def process_batch(chat_id: int) -> None:
                 return index, customers, None
             except Exception as error:
                 logger.exception("Batch item failed")
-                return index, None, str(error)
+                return index, None, f"{index}-{batch_item_kind_label(item)}: {error}"
 
     tasks = [
         asyncio.create_task(extract_with_index(index, item))
@@ -3025,7 +3133,7 @@ async def process_batch(chat_id: int) -> None:
         if customers is not None:
             extracted_by_index[index - 1] = customers
         if error:
-            errors.append(f"{index}-xabar: {error}")
+            errors.append(error)
 
         now = asyncio.get_running_loop().time()
         if processed_total == len(items) or now - last_progress_edit_at >= BATCH_PROGRESS_EDIT_INTERVAL_SECONDS:
@@ -3288,10 +3396,12 @@ async def show_ai_assistant(message: Message) -> None:
     await safe_answer(
         message,
         "AI yordamchi bo'limi.\n\n"
-        "EMU bo'yicha savolingizni yozing. Masalan:\n"
+        "EMU bo'yicha savolingizni yozing. Bot o'zbek lotin, o'zbek kirill va ruscha savollarni tushunishga harakat qiladi.\n\n"
+        "Masalan:\n"
         "- Samarqand ofislari qayerda?\n"
         "- Andijondan Toshkentga 2 kg qancha?\n"
-        "- Do ofisa va Na dom farqi nima?\n\n"
+        "- До офиса и На дом фарқи нима?\n"
+        "- Пахтачида офис борми?\n\n"
         f"Chiqish uchun {MENU_BACK} tugmasini bosing.",
         reply_markup=reply_keyboard([], add_back=True),
     )
@@ -3631,26 +3741,26 @@ async def answer_ai_question(message: Message, question: str) -> None:
     context_parts: list[str] = []
 
     try:
-        if any(word in lowered for word in ["narx", "kalk", "qancha", "kg", "кг", "sum", "so'm", "som"]):
+        if any(word in lowered for word in ["narx", "kalk", "qancha", "kg", "кг", "sum", "so'm", "som", "цена", "стоимость", "сколько"]):
             calculator_answer = await calculate_from_ai_question(message, question)
             if calculator_answer:
                 await safe_answer(message, calculator_answer)
                 return
 
-        if any(word in lowered for word in ["ofis", "filial", "office", "branch"]):
+        if any(word in lowered for word in ["ofis", "filial", "office", "branch", "офис", "филиал", "отделение"]):
             branches = await get_all_emu_branches()
             matching = find_matching_branches_for_question(branches, question)
             if not matching:
                 matching = branches
-            if any(word in lowered for word in ["nechta", "qancha", "soni"]):
+            if any(word in lowered for word in ["nechta", "qancha", "soni", "сколько", "количество"]):
                 await safe_answer(message, format_office_count_answer(matching))
                 return
-            if any(word in lowered for word in ["bormi", "qayerda", "manzil", "telefon", "ish vaqti"]):
+            if any(word in lowered for word in ["bormi", "qayerda", "manzil", "telefon", "ish vaqti", "где", "адрес", "телефон", "время работы", "есть ли"]):
                 await safe_answer(message, format_branches_list(matching, "Ofislar bo'yicha topilgan ma'lumot", limit=10))
                 return
             context_parts.append(format_branches_list(matching, "Ofislar bo'yicha topilgan ma'lumot", limit=20))
 
-        if any(word in lowered for word in ["viloyat", "tuman", "shahar", "city", "region"]):
+        if any(word in lowered for word in ["viloyat", "tuman", "shahar", "city", "region", "область", "район", "город"]):
             cities = await get_emu_cities()
             sample = [
                 f"{city.get('id')}: {localized_name(city)} ({clean_text((city.get('region_name') or {}).get('UZ'))})"
@@ -3658,7 +3768,7 @@ async def answer_ai_question(message: Message, question: str) -> None:
             ]
             context_parts.append("EMU shahar/tuman ma'lumotlari:\n" + "\n".join(sample))
 
-        if any(word in lowered for word in ["narx", "kalk", "qancha", "kg", "sum", "so'm", "som"]):
+        if any(word in lowered for word in ["narx", "kalk", "qancha", "kg", "sum", "so'm", "som", "цена", "стоимость", "сколько"]):
             context_parts.append(
                 "Kalkulyator uchun aniq hisoblashda jo'natuvchi shahar/tuman, oluvchi shahar/tuman, "
                 "yetkazish turi va og'irlik kerak. Botdagi Kalkulyator bo'limi shu ma'lumotlar asosida EMU API'dan narx oladi."
@@ -3676,16 +3786,18 @@ async def answer_ai_question(message: Message, question: str) -> None:
             return
 
         response = await asyncio.to_thread(
-            openai_client.responses.create,
+            call_openai_response,
             model=OPENAI_MODEL,
             input=[
                 {
                     "role": "system",
                     "content": (
-                        "Siz EMU botining yordamchisisiz. Faqat berilgan kontekstga tayanib, "
-                        "qisqa, amaliy va o'zbek tilida javob bering. Javobni abzastlarga ajrating: "
-                        "asosiy xulosa, keyin kerak bo'lsa punktli ro'yxat. Har bir fakt alohida qatorda bo'lsin. "
-                        "Agar ma'lumot yetmasa, qaysi bo'limdan foydalanish kerakligini ayting."
+                        "Siz EMU botining yordamchisisiz. Faqat berilgan kontekstga tayaning, fakt uydirmang. "
+                        "Savol lotinda bo'lsa o'zbek lotinda, kirillcha o'zbek bo'lsa o'zbek kirillda, "
+                        "ruscha bo'lsa rus tilida javob bering. "
+                        "Javob tartibli bo'lsin: avval qisqa xulosa, keyin kerak bo'lsa punktlar. "
+                        "Agar ma'lumot yetmasa, aniq nimasi yetmayotganini va qaysi bo'limdan foydalanish kerakligini ayting. "
+                        + ai_answer_style_instruction(question)
                     ),
                 },
                 {
@@ -3695,10 +3807,20 @@ async def answer_ai_question(message: Message, question: str) -> None:
             ],
         )
         answer = clean_text(getattr(response, "output_text", ""))
-        await safe_answer(message, answer or "Javob topilmadi. Savolni aniqroq yozing.")
+        fallback = "Javob topilmadi. Savolni aniqroq yozing."
+        if preferred_answer_style(question) == "uz_cyrillic":
+            fallback = "Жавоб топилмади. Саволни аниқроқ ёзинг."
+        elif preferred_answer_style(question) == "russian":
+            fallback = "Ответ не найден. Уточните вопрос."
+        await safe_answer(message, answer or fallback)
     except Exception as error:
         logger.exception("AI assistant failed")
-        await safe_answer(message, f"AI yordamchida xatolik: {error}")
+        error_text = f"AI yordamchida xatolik: {error}"
+        if preferred_answer_style(question) == "uz_cyrillic":
+            error_text = f"AI ёрдамчида хатолик: {error}"
+        elif preferred_answer_style(question) == "russian":
+            error_text = f"Ошибка в AI-помощнике: {error}"
+        await safe_answer(message, error_text)
 
 
 async def send_offices_page(message: Message, state: dict[str, Any], page: int = 0) -> None:
