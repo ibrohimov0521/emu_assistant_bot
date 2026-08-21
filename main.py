@@ -59,9 +59,13 @@ ADMIN_IDS = DEFAULT_ADMIN_IDS | ENV_ADMIN_IDS
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 TEMPLATE_DIR = BASE_DIR / "templates"
-TEMPLATE_PATH = TEMPLATE_DIR / "yangi_shablon.xlsx"
+PHYSICAL_TEMPLATE_PATH = TEMPLATE_DIR / "yangi_shablon.xlsx"
+LEGAL_TEMPLATE_PATH = TEMPLATE_DIR / "yuridik_shablon.xlsx"
+LEGAL_SURCHARGE_TEMPLATE_PATH = TEMPLATE_DIR / "yuridik_ustama_shablon.xlsx"
+TEMPLATE_PATH = PHYSICAL_TEMPLATE_PATH
 PHYSICAL_EXCEL_PATH = DATA_DIR / "customers.xlsx"
 LEGAL_EXCEL_PATH = DATA_DIR / "customers_legal.xlsx"
+LEGAL_SURCHARGE_EXCEL_PATH = DATA_DIR / "customers_legal_surcharge.xlsx"
 EXCEL_PATH = PHYSICAL_EXCEL_PATH
 APPROVED_USERS_PATH = DATA_DIR / "approved_users.json"
 ACCESS_REQUESTS_PATH = DATA_DIR / "access_requests.json"
@@ -74,7 +78,7 @@ try:
 except ZoneInfoNotFoundError:
     APP_TZ = timezone(timedelta(hours=5), name="Asia/Tashkent")
 
-HEADERS = [
+PHYSICAL_HEADERS = [
     "Номер",
     "Компания-получатель",
     "ФИО получателя",
@@ -94,8 +98,44 @@ HEADERS = [
     "Оплата получателем",
 ]
 
-EXCEL_COLUMN_COUNT = len(HEADERS)
-LEGAL_HEADERS = HEADERS[:10] + HEADERS[15:17]
+LEGAL_HEADERS = [
+    "Номер",
+    "Компания-получатель",
+    "ФИО получателя",
+    "Адрес получателя",
+    "Телефон получателя",
+    "Шифр клиента",
+    "Масса посылки",
+    "Поручение",
+    "Количество мест",
+    "Режим",
+    "Город-получатель",
+    "Оплата получателем",
+]
+
+LEGAL_SURCHARGE_HEADERS = [
+    "Номер",
+    "Компания-получатель",
+    "ФИО получателя",
+    "Адрес получателя",
+    "Телефон получателя",
+    "Шифр клиента",
+    "Масса посылки",
+    "Поручение",
+    "Количество мест",
+    "Режим",
+    "Город-получатель",
+    "Оплата получателем",
+    "",
+    "Количество",
+    "Масса",
+    "Цена",
+    "Наименование",
+    "ИКПУ",
+]
+
+HEADERS = PHYSICAL_HEADERS
+EXCEL_COLUMN_COUNT = len(PHYSICAL_HEADERS)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,6 +170,7 @@ MENU_ARCHIVE = "🗂 Arxiv"
 MENU_SETTINGS = "⚙️ Sozlamalar"
 MENU_BACK = "⬅️ Orqaga"
 MENU_LEGAL = "🏢 Yuridik mijoz"
+MENU_LEGAL_SURCHARGE = "💰 Ustama to'lovli"
 MENU_PHYSICAL = "👤 ФИЗ ЛИЦО"
 MENU_EXCEL_FILE = "📊 Excel fayl"
 MENU_TEMPLATE_FILE = "📄 Shablon"
@@ -156,6 +197,7 @@ MENU_TEXTS = {
     MENU_SETTINGS,
     MENU_BACK,
     MENU_LEGAL,
+    MENU_LEGAL_SURCHARGE,
     MENU_PHYSICAL,
     MENU_EXCEL_FILE,
     MENU_TEMPLATE_FILE,
@@ -174,6 +216,7 @@ MENU_TEXTS = {
     "Sozlamalar",
     "Orqaga",
     "Yuridik mijoz",
+    "Ustama to'lovli",
     "ФИЗ ЛИЦО",
     "Excel fayl",
     "Shablon",
@@ -187,6 +230,7 @@ MENU_TEXTS = {
 }
 
 CLIENT_TYPE_LEGAL = "legal"
+CLIENT_TYPE_LEGAL_SURCHARGE = "legal_surcharge"
 CLIENT_TYPE_PHYSICAL = "physical"
 EMU_API_BASE_URL = "https://apiv1.emu.uz"
 TASHKENT_REGION_ID = 13
@@ -204,6 +248,7 @@ MENU_ALIASES = {
     "Sozlamalar": MENU_SETTINGS,
     "Orqaga": MENU_BACK,
     "Yuridik mijoz": MENU_LEGAL,
+    "Ustama to'lovli": MENU_LEGAL_SURCHARGE,
     "ФИЗ ЛИЦО": MENU_PHYSICAL,
     "Excel fayl": MENU_EXCEL_FILE,
     "Shablon": MENU_TEMPLATE_FILE,
@@ -362,7 +407,12 @@ def user_dir(chat_id: int) -> Path:
 
 
 def collection_filename(client_type: str, created_at: datetime) -> str:
-    suffix = "legal" if client_type == CLIENT_TYPE_LEGAL else "physical"
+    if client_type == CLIENT_TYPE_LEGAL:
+        suffix = "legal"
+    elif client_type == CLIENT_TYPE_LEGAL_SURCHARGE:
+        suffix = "legal_surcharge"
+    else:
+        suffix = "physical"
     return f"{created_at.strftime('%Y%m%d_%H%M%S')}_{suffix}.xlsx"
 
 
@@ -1265,7 +1315,8 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
 def collect_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=MENU_LEGAL), KeyboardButton(text=MENU_PHYSICAL)],
+            [KeyboardButton(text=MENU_LEGAL), KeyboardButton(text=MENU_LEGAL_SURCHARGE)],
+            [KeyboardButton(text=MENU_PHYSICAL)],
             [KeyboardButton(text=MENU_BACK)],
         ],
         resize_keyboard=True,
@@ -1315,44 +1366,41 @@ def collect_active_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-SETUP_STEPS = [
-    (
-        "sender_full_name",
-        "Jo'natuvchining ism familiyasini kiriting.",
-    ),
-    (
-        "sender_phone",
-        "Jo'natuvchining telefon raqamini kiriting. Masalan: +998 90 123 45 67",
-    ),
-    (
-        "sender_address",
-        "Jo'natuvchining to'liq manzilini kiriting.",
-    ),
-    (
-        "sender_city_ru",
-        "Jo'natuvchi qaysi tuman/shahardanligini rus tilida kiriting. Masalan: Ташкент, Бухара, Шафиркан",
-    ),
-    (
-        "cipher_prefix",
-        "Jo'natmalar uchun qaytarilmaydigan shifr prefixini kiriting. Masalan: ABC",
-    ),
-    (
-        "delivery_type",
-        "Yetkazib berish turini tanlang.",
-    ),
-    (
-        "payment_by_receiver",
-        "Оплата получателем bo'ladimi?",
-    ),
-    (
-        "parcel_weight",
-        "Jo'natma og'irligini kiriting. Masalan: 1.5",
-    ),
-    (
-        "places_count",
-        "Bir mijozga nechta jo'natma bo'lishini kiriting. Masalan: 1",
-    ),
+PHYSICAL_SETUP_STEPS = [
+    ("sender_full_name", "Jo'natuvchining ism familiyasini kiriting."),
+    ("sender_phone", "Jo'natuvchining telefon raqamini kiriting. Masalan: +998 90 123 45 67"),
+    ("sender_address", "Jo'natuvchining to'liq manzilini kiriting."),
+    ("sender_city_ru", "Jo'natuvchi qaysi tuman/shahardanligini rus tilida kiriting. Masalan: Ташкент, Бухара, Шафиркан"),
+    ("cipher_prefix", "Jo'natmalar uchun qaytarilmaydigan shifr prefixini kiriting. Masalan: ABC"),
+    ("delivery_type", "Yetkazib berish turini tanlang."),
+    ("payment_by_receiver", "Оплата получателем bo'ladimi?"),
+    ("parcel_weight", "Jo'natma og'irligini kiriting. Masalan: 1.5"),
+    ("places_count", "Bir mijozga nechta jo'natma bo'lishini kiriting. Masalan: 1"),
 ]
+
+LEGAL_SETUP_STEPS = [
+    ("cipher_prefix", "Jo'natmalar uchun qaytarilmaydigan shifr prefixini kiriting. Masalan: ABC"),
+    ("delivery_type", "Yetkazib berish turini tanlang."),
+    ("payment_by_receiver", "Оплата получателем bo'ladimi?"),
+    ("parcel_weight", "Jo'natma og'irligini kiriting. Masalan: 1.5"),
+    ("places_count", "Bir mijozga nechta jo'natma bo'lishini kiriting. Masalan: 1"),
+]
+
+LEGAL_SURCHARGE_SETUP_STEPS = [
+    ("cipher_prefix", "Jo'natmalar uchun qaytarilmaydigan shifr prefixini kiriting. Masalan: ABC"),
+    ("delivery_type", "Yetkazib berish turini tanlang."),
+    ("ikpu_payload", "IKPU va package code ni kiriting. Masalan: 06109001001000000, 1124331"),
+    ("parcel_weight", "Jo'natma og'irligini kiriting. Masalan: 1.5"),
+    ("places_count", "Bir mijozga nechta jo'natma bo'lishini kiriting. Masalan: 1"),
+]
+
+
+def setup_steps_for_client_type(client_type: str) -> list[tuple[str, str]]:
+    if client_type == CLIENT_TYPE_LEGAL:
+        return LEGAL_SETUP_STEPS
+    if client_type == CLIENT_TYPE_LEGAL_SURCHARGE:
+        return LEGAL_SURCHARGE_SETUP_STEPS
+    return PHYSICAL_SETUP_STEPS
 
 ALLOWED_RECIPIENT_LOCATIONS = list(SERVER_LOCATIONS)
 
@@ -1389,6 +1437,8 @@ CUSTOMER_SCHEMA: dict[str, Any] = {
                     "address": {"type": "string"},
                     "recipient_region_ru": {"type": "string"},
                     "note": {"type": "string"},
+                    "declared_price": {"type": "string"},
+                    "product_name": {"type": "string"},
                     "needs_review": {"type": "string"},
                 },
                 "required": [
@@ -1398,6 +1448,8 @@ CUSTOMER_SCHEMA: dict[str, Any] = {
                     "address",
                     "recipient_region_ru",
                     "note",
+                    "declared_price",
+                    "product_name",
                     "needs_review",
                 ],
             },
@@ -1419,6 +1471,8 @@ Ajratiladigan maydonlar:
 - recipient_region_ru: oluvchining manzilidan P ustun uchun mos shahar/tuman nomini rus tilida tanlang. Faqat quyidagi ro'yxatdan bittasini yozing, boshqa format yozmang:
 {location_list}
 - note: boshqa foydali izohlar, noaniq yoki yo'qolmasligi kerak bo'lgan bo'laklar; telefon raqamlarini bu maydonga yozmang
+- declared_price: agar matnda tovar summasi yoki ustama to'lov summasi bo'lsa faqat son ko'rinishida yozing; masalan 199000. Bo'lmasa bo'sh string.
+- product_name: agar matnda aniq tovar nomi bo'lsa yozing, bo'lmasa bo'sh string.
 - needs_review: noaniq o'qilgan, telefon raqami shubhali, rasm sifati past, yoki maydonlar aralash bo'lsa qisqa izoh
 
 Qoidalar:
@@ -1430,6 +1484,7 @@ Qoidalar:
 - Faqat aniq boshqa-boshqa mijozlar bo'lsa alohida obyekt qiling.
 - address maydoniga faqat yetkazish manzilini yozing. Narx, to'lov summasi, rang, tovar/vlojenie, o'lcham, kiyim turi kabi ma'lumotlarni addressga qo'shmang; ularni note maydoniga yozing.
 - Masalan: "Farg'ona Mustaqillik ko'cha mehmonxona oldi, 360.000 so'm qora" bo'lsa address="Farg'ona Mustaqillik ko'cha mehmonxona oldi", note="360.000 so'm qora".
+- declared_price uchun summani note ichidan ham ajratib oling, lekin address ichiga qo'shmang.
 - recipient_region_ru hech qachon "Ферганская область, Учкуприкский район" kabi bo'lmasin; ro'yxatdagi "Учкуприк" kabi bitta qiymat bo'lsin.
 - Agar manzilda viloyat/tuman/shahar nomi bor bo'lsa, recipient_region_ru ni bo'sh qoldirmang; ro'yxatdan eng yaqin mos qiymatni tanlang.
 - "Samarqand viloyati Paxtachi tumani" bo'lsa recipient_region_ru uchun "Пахтачи" yozing.
@@ -1440,7 +1495,19 @@ Qoidalar:
 
 
 def headers_for_client_type(client_type: str = CLIENT_TYPE_PHYSICAL) -> list[str]:
-    return LEGAL_HEADERS if client_type == CLIENT_TYPE_LEGAL else HEADERS
+    if client_type == CLIENT_TYPE_LEGAL:
+        return LEGAL_HEADERS
+    if client_type == CLIENT_TYPE_LEGAL_SURCHARGE:
+        return LEGAL_SURCHARGE_HEADERS
+    return PHYSICAL_HEADERS
+
+
+def template_path_for_client_type(client_type: str = CLIENT_TYPE_PHYSICAL) -> Path:
+    if client_type == CLIENT_TYPE_LEGAL:
+        return LEGAL_TEMPLATE_PATH
+    if client_type == CLIENT_TYPE_LEGAL_SURCHARGE:
+        return LEGAL_SURCHARGE_TEMPLATE_PATH if LEGAL_SURCHARGE_TEMPLATE_PATH.exists() else LEGAL_TEMPLATE_PATH
+    return PHYSICAL_TEMPLATE_PATH
 
 
 def excel_path_for_client_type(client_type: str = CLIENT_TYPE_PHYSICAL, chat_id: int | None = None) -> Path:
@@ -1449,7 +1516,11 @@ def excel_path_for_client_type(client_type: str = CLIENT_TYPE_PHYSICAL, chat_id:
         session_path = clean_text(session.get("excel_path"))
         if session_path:
             return Path(session_path)
-    return LEGAL_EXCEL_PATH if client_type == CLIENT_TYPE_LEGAL else PHYSICAL_EXCEL_PATH
+    if client_type == CLIENT_TYPE_LEGAL:
+        return LEGAL_EXCEL_PATH
+    if client_type == CLIENT_TYPE_LEGAL_SURCHARGE:
+        return LEGAL_SURCHARGE_EXCEL_PATH
+    return PHYSICAL_EXCEL_PATH
 
 
 def current_client_type(chat_id: int) -> str:
@@ -1467,8 +1538,14 @@ def template_column_map(template_sheet: Any) -> dict[str, int]:
 
 def apply_template_header(sheet: Any, headers: list[str] | None = None) -> None:
     headers = headers or HEADERS
-    if TEMPLATE_PATH.exists():
-        template = load_workbook(TEMPLATE_PATH)
+    client_type = CLIENT_TYPE_PHYSICAL
+    if headers == LEGAL_HEADERS:
+        client_type = CLIENT_TYPE_LEGAL
+    elif headers == LEGAL_SURCHARGE_HEADERS:
+        client_type = CLIENT_TYPE_LEGAL_SURCHARGE
+    template_path = template_path_for_client_type(client_type)
+    if template_path.exists():
+        template = load_workbook(template_path)
         try:
             template_sheet = template.active
             source_columns = template_column_map(template_sheet)
@@ -1544,8 +1621,9 @@ def ensure_excel_file(client_type: str = CLIENT_TYPE_PHYSICAL, path: Path | None
         ensure_workbook_schema(path, headers)
         return
 
-    if TEMPLATE_PATH.exists():
-        shutil.copyfile(TEMPLATE_PATH, path)
+    template_path = template_path_for_client_type(client_type)
+    if template_path.exists():
+        shutil.copyfile(template_path, path)
         workbook = load_workbook(path)
         try:
             sheet = workbook.active
@@ -1620,6 +1698,14 @@ PARCEL_NOTE_RE = re.compile(
     r"платье|брюк|обув|сумк|товар|dona|ta|шт"
     r")\b"
 )
+
+
+def parse_declared_price(value: Any) -> int:
+    text = clean_text(value)
+    if not text:
+        return 0
+    digits = re.sub(r"[^\d]", "", text)
+    return int(digits) if digits else 0
 
 
 def extract_phone_candidates(*values: str) -> list[str]:
@@ -2119,6 +2205,31 @@ def normalize_cipher_prefix(value: str) -> str:
     return re.sub(r"[^A-ZА-ЯЁ0-9_-]", "", prefix)
 
 
+def normalize_ikpu_payload(value: str) -> tuple[str | None, str | None]:
+    text = clean_text(value)
+    if not text:
+        return None, "IKPU va package code bo'sh bo'lmasin."
+
+    formatted_match = re.search(
+        r'ikpu:"(?P<ikpu>\d+)","packageCode":"(?P<package>\d+)"',
+        text,
+        flags=re.IGNORECASE,
+    )
+    if formatted_match:
+        return (
+            f'ikpu:"{formatted_match.group("ikpu")}","packageCode":"{formatted_match.group("package")}"',
+            None,
+        )
+
+    parts = [part.strip().strip('"') for part in re.split(r"[,;|]+", text) if part.strip()]
+    if len(parts) < 2:
+        return None, "Masalan: 06109001001000000, 1124331 ko'rinishida yuboring."
+    ikpu, package_code = re.sub(r"\D", "", parts[0]), re.sub(r"\D", "", parts[1])
+    if not ikpu or not package_code:
+        return None, "IKPU va package code faqat raqamlardan iborat bo'lsin."
+    return f'ikpu:"{ikpu}","packageCode":"{package_code}"', None
+
+
 def find_last_data_row(sheet: Any) -> int:
     for row_index in range(sheet.max_row, 1, -1):
         if any(sheet.cell(row_index, col).value not in (None, "") for col in range(1, sheet.max_column + 1)):
@@ -2163,7 +2274,7 @@ def copy_row_style(sheet: Any, source_row: int, target_row: int, column_count: i
 
 def is_cipher_prefix_available(prefix: str) -> bool:
     existing_prefixes: set[str] = set()
-    for client_type in (CLIENT_TYPE_PHYSICAL, CLIENT_TYPE_LEGAL):
+    for client_type in (CLIENT_TYPE_PHYSICAL, CLIENT_TYPE_LEGAL, CLIENT_TYPE_LEGAL_SURCHARGE):
         ensure_excel_file(client_type)
         workbook = load_workbook(excel_path_for_client_type(client_type))
         try:
@@ -2220,6 +2331,9 @@ def validate_setup_value(chat_id: int, key: str, value: str) -> tuple[str | None
             return None, f"{prefix} shifri oldin ishlatilgan. Boshqa prefix kiriting."
         return prefix, None
 
+    if key == "ikpu_payload":
+        return normalize_ikpu_payload(value)
+
     if key == "places_count":
         digits = re.sub(r"\D", "", value)
         if not digits or int(digits) < 1:
@@ -2238,20 +2352,30 @@ def setup_step_keyboard(key: str) -> ReplyKeyboardMarkup | None:
 
 
 async def ask_setup_step(message_or_query: Message | CallbackQuery, step_index: int) -> None:
-    key, question = SETUP_STEPS[step_index]
+    chat_id = None
+    if isinstance(message_or_query, CallbackQuery):
+        if message_or_query.message:
+            chat_id = message_or_query.message.chat.id
+    else:
+        chat_id = message_or_query.chat.id
+
+    client_type = CLIENT_TYPE_PHYSICAL
+    if chat_id is not None:
+        state = setup_states.get(chat_id) or {}
+        client_type = clean_text(state.get("data", {}).get("client_type")) or CLIENT_TYPE_PHYSICAL
+
+    steps = setup_steps_for_client_type(client_type)
+    key, question = steps[step_index]
     keyboard = setup_step_keyboard(key)
     sent_message = None
-    chat_id = None
 
     if key == "cipher_prefix":
         question = f"{question}\n\nShifr kerak bo'lmasa, pastdagi tugmani bosing."
 
     if isinstance(message_or_query, CallbackQuery):
         if message_or_query.message:
-            chat_id = message_or_query.message.chat.id
             sent_message = await safe_answer(message_or_query.message, question, reply_markup=keyboard)
     else:
-        chat_id = message_or_query.chat.id
         sent_message = await safe_answer(message_or_query, question, reply_markup=keyboard)
 
     if chat_id is not None:
@@ -2259,21 +2383,43 @@ async def ask_setup_step(message_or_query: Message | CallbackQuery, step_index: 
 
 
 def setup_summary(session: dict[str, str]) -> str:
-    client_type = "Yuridik mijoz" if session.get("client_type") == CLIENT_TYPE_LEGAL else "ФИЗ ЛИЦО"
-    return (
-        "Jo'natuvchi ma'lumotlari saqlandi:\n"
-        f"Yo'nalish: {client_type}\n"
-        f"Ism familiya: {session['sender_full_name']}\n"
-        f"Telefon: {session['sender_phone']}\n"
-        f"Manzil: {session['sender_address']}\n"
-        f"Shahar: {session['sender_city_ru']}\n"
-        f"Shifr: {session['cipher_prefix'] + '1, ' + session['cipher_prefix'] + '2, ...' if session['cipher_prefix'] else 'yoq'}\n"
-        f"Yetkazib berish turi: {session['delivery_type']}\n"
-        f"Оплата получателем: {session['payment_by_receiver']}\n"
-        f"Og'irlik: {session['parcel_weight']}\n"
-        f"Количество мест: {session['places_count']}\n\n"
-        "Endi mijozlar ro'yxatini matn yoki rasm qilib yuboring."
+    type_map = {
+        CLIENT_TYPE_LEGAL: "Yuridik mijoz",
+        CLIENT_TYPE_LEGAL_SURCHARGE: "Ustama to'lovli",
+        CLIENT_TYPE_PHYSICAL: "ФИЗ ЛИЦО",
+    }
+    lines = [
+        "Jo'natuvchi ma'lumotlari saqlandi:",
+        f"Yo'nalish: {type_map.get(session.get('client_type', CLIENT_TYPE_PHYSICAL), 'ФИЗ ЛИЦО')}",
+    ]
+    if session.get("client_type") == CLIENT_TYPE_PHYSICAL:
+        lines.extend(
+            [
+                f"Ism familiya: {session['sender_full_name']}",
+                f"Telefon: {session['sender_phone']}",
+                f"Manzil: {session['sender_address']}",
+                f"Shahar: {session['sender_city_ru']}",
+            ]
+        )
+    lines.extend(
+        [
+            f"Shifr: {session['cipher_prefix'] + '1, ' + session['cipher_prefix'] + '2, ...' if session['cipher_prefix'] else 'yoq'}",
+            f"Yetkazib berish turi: {session['delivery_type']}",
+        ]
     )
+    if session.get("client_type") == CLIENT_TYPE_LEGAL_SURCHARGE:
+        lines.append(f"IKPU: {session['ikpu_payload']}")
+    else:
+        lines.append(f"Оплата получателем: {session['payment_by_receiver']}")
+    lines.extend(
+        [
+            f"Og'irlik: {session['parcel_weight']}",
+            f"Количество мест: {session['places_count']}",
+            "",
+            "Endi mijozlar ro'yxatini matn yoki rasm qilib yuboring.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def legal_sender_defaults() -> dict[str, str]:
@@ -2286,11 +2432,21 @@ def legal_sender_defaults() -> dict[str, str]:
     }
 
 
+def legal_surcharge_defaults() -> dict[str, str]:
+    return {
+        "client_type": CLIENT_TYPE_LEGAL_SURCHARGE,
+        "sender_full_name": "",
+        "sender_phone": "",
+        "sender_address": "",
+        "sender_city_ru": "",
+        "payment_by_receiver": "",
+    }
+
+
 async def start_setup(
     message: Message,
     reset: bool = False,
     client_type: str = CLIENT_TYPE_PHYSICAL,
-    start_step: int = 0,
     initial_data: dict[str, str] | None = None,
 ) -> None:
     chat_id = message.chat.id
@@ -2298,22 +2454,28 @@ async def start_setup(
         sender_sessions.pop(chat_id, None)
         save_user_sessions()
     setup_states[chat_id] = {
-        "step": start_step,
+        "step": 0,
         "data": initial_data or {"client_type": client_type},
         "cleanup_messages": [],
     }
-    intro_text = (
-        "Yuridik mijoz tanlandi.\n"
-        "Jo'natuvchi ma'lumotlari so'ralmaydi. Endi jo'natma sozlamalarini kiritamiz."
-        if client_type == CLIENT_TYPE_LEGAL
-        else "ФИЗ ЛИЦО tanlandi.\nExcel yaratishdan oldin jo'natuvchi ma'lumotlarini kiritamiz."
-    )
+    if client_type == CLIENT_TYPE_LEGAL:
+        intro_text = (
+            "Yuridik mijoz tanlandi.\n"
+            "Jo'natuvchi ma'lumotlari so'ralmaydi. Endi jo'natma sozlamalarini kiritamiz."
+        )
+    elif client_type == CLIENT_TYPE_LEGAL_SURCHARGE:
+        intro_text = (
+            "Ustama to'lovli yo'nalish tanlandi.\n"
+            "Jo'natuvchi ma'lumotlari so'ralmaydi. Endi jo'natma va IKPU sozlamalarini kiritamiz."
+        )
+    else:
+        intro_text = "ФИЗ ЛИЦО tanlandi.\nExcel yaratishdan oldin jo'natuvchi ma'lumotlarini kiritamiz."
     intro_message = await safe_answer(
         message,
         intro_text,
     )
     remember_setup_message(chat_id, intro_message)
-    await ask_setup_step(message, start_step)
+    await ask_setup_step(message, 0)
 
 
 async def start_legal_setup(message: Message, reset: bool = True) -> None:
@@ -2321,8 +2483,16 @@ async def start_legal_setup(message: Message, reset: bool = True) -> None:
         message,
         reset=reset,
         client_type=CLIENT_TYPE_LEGAL,
-        start_step=4,
         initial_data=legal_sender_defaults(),
+    )
+
+
+async def start_legal_surcharge_setup(message: Message, reset: bool = True) -> None:
+    await start_setup(
+        message,
+        reset=reset,
+        client_type=CLIENT_TYPE_LEGAL_SURCHARGE,
+        initial_data=legal_surcharge_defaults(),
     )
 
 
@@ -2335,8 +2505,9 @@ async def save_setup_value_and_advance(
     state = setup_states[chat_id]
     state["data"][key] = value
     step_index = state["step"] + 1
+    steps = setup_steps_for_client_type(state["data"].get("client_type", CLIENT_TYPE_PHYSICAL))
 
-    if step_index >= len(SETUP_STEPS):
+    if step_index >= len(steps):
         session = state["data"]
         session["chat_id"] = str(chat_id)
         collection = create_collection_for_chat(
@@ -2369,7 +2540,8 @@ async def handle_setup_message(message: Message) -> bool:
         return False
 
     step_index = state["step"]
-    key, _question = SETUP_STEPS[step_index]
+    steps = setup_steps_for_client_type(state["data"].get("client_type", CLIENT_TYPE_PHYSICAL))
+    key, _question = steps[step_index]
     parsed_value, error = validate_setup_value(chat_id, key, message.text or "")
     if error:
         await safe_answer(message, error)
@@ -2398,7 +2570,8 @@ async def setup_callback_handler(callback: CallbackQuery) -> None:
         await callback.answer("Sozlash jarayoni topilmadi. /setup ni bosing.", show_alert=True)
         return
 
-    expected_key, _question = SETUP_STEPS[state["step"]]
+    steps = setup_steps_for_client_type(state["data"].get("client_type", CLIENT_TYPE_PHYSICAL))
+    expected_key, _question = steps[state["step"]]
     callback_key, value = parts[1], parts[2]
     if callback_key != expected_key:
         await callback.answer("Bu tugma eski savol uchun. Hozirgi savolga javob bering.", show_alert=True)
@@ -2419,6 +2592,7 @@ async def setup_callback_handler(callback: CallbackQuery) -> None:
 def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> list[list[str]]:
     rows = []
     is_legal = sender.get("client_type") == CLIENT_TYPE_LEGAL
+    is_legal_surcharge = sender.get("client_type") == CLIENT_TYPE_LEGAL_SURCHARGE
     for customer in customers:
         recipient_location, location_review = resolve_allowed_recipient_location(customer)
         cleaned_address, address_note = split_address_and_note(customer.get("address"))
@@ -2463,7 +2637,20 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
             sender["places_count"],
             delivery_type,
         ]
-        if is_legal:
+        if is_legal_surcharge:
+            declared_price = parse_declared_price(customer.get("declared_price"))
+            product_name = clean_text(customer.get("product_name"))
+            row = common_values + [
+                recipient_location,
+                "",
+                "",
+                sender["places_count"] if declared_price > 0 else "",
+                sender["parcel_weight"] if declared_price > 0 else "",
+                str(declared_price) if declared_price > 0 else "",
+                product_name if declared_price > 0 else "",
+                sender["ikpu_payload"] if declared_price > 0 else "",
+            ]
+        elif is_legal:
             row = common_values + [
                 recipient_location,
                 sender["payment_by_receiver"],
@@ -2648,6 +2835,14 @@ def extract_customers_from_excel_bytes(file_bytes: bytes) -> list[dict[str, Any]
                 full_name = values[2] if len(values) > 2 else ""
                 address = values[3] if len(values) > 3 else ""
                 extra_values = [value for value in values[4:] if value]
+                declared_price = ""
+                product_name = ""
+                for extra in extra_values:
+                    if not declared_price and PRICE_RE.search(extra):
+                        declared_price = str(parse_declared_price(extra))
+                        continue
+                    if not product_name and not PHONE_CANDIDATE_RE.search(extra):
+                        product_name = extra
                 if cipher and not any([phone, full_name, address]):
                     continue
                 if len(values) < 4:
@@ -2666,6 +2861,8 @@ def extract_customers_from_excel_bytes(file_bytes: bytes) -> list[dict[str, Any]
                         "address": address,
                         "recipient_region_ru": location,
                         "note": "; ".join(extra_values),
+                        "declared_price": declared_price,
+                        "product_name": product_name,
                         "needs_review": "" if address and phone else f"Excel {sheet.title}!{row_index}-qatorni tekshirish kerak",
                     }
                 )
@@ -2910,7 +3107,7 @@ async def help_handler(message: Message) -> None:
         message,
         "Foydalanish yo'riqnomasi:\n\n"
         "1. Excel ga yig'ish bo'limiga kiring.\n"
-        "2. Yuridik mijoz yoki ФИЗ ЛИЦО yo'nalishini tanlang.\n"
+        "2. Yuridik mijoz, Ustama to'lovli yoki ФИЗ ЛИЦО yo'nalishini tanlang.\n"
         "3. Bot so'ragan sozlamalarga javob bering.\n"
         "4. Mijoz ma'lumotlarini matn, rasm yoki .xlsx Excel qilib yuboring.\n"
         "5. Tayyor faylni Arxiv bo'limidan oling.\n\n"
@@ -2963,13 +3160,15 @@ async def excel_handler(message: Message) -> None:
 async def template_handler(message: Message) -> None:
     if not await ensure_user_access(message):
         return
-    if not TEMPLATE_PATH.exists():
+    client_type = current_client_type(message.chat.id) if message.chat.id in sender_sessions else CLIENT_TYPE_PHYSICAL
+    template_path = template_path_for_client_type(client_type)
+    if not template_path.exists():
         await safe_answer(message, "Shablon fayl topilmadi.")
         return
 
     await safe_answer_document(
         message,
-        BufferedInputFile(TEMPLATE_PATH.read_bytes(), filename="yangi_shablon.xlsx"),
+        BufferedInputFile(template_path.read_bytes(), filename=template_path.name),
         caption="Excel shablon fayli.",
     )
 
@@ -3252,6 +3451,7 @@ async def show_collect_menu(message: Message) -> None:
         message,
         "Jo'natmalarni yig'ish bo'limi.\n\n"
         "Yuridik mijoz - jo'natuvchi ma'lumotlari so'ralmaydi.\n"
+        "Ustama to'lovli - yuridik shablon, IKPU va tovar summasi bilan ishlaydi.\n"
         "ФИЗ ЛИЦО - jo'natuvchi ma'lumotlari odatdagidek so'raladi.\n\n"
         "Kerakli yo'nalishni tanlang.",
         reply_markup=collect_menu_keyboard(),
@@ -3371,6 +3571,10 @@ async def handle_menu_message(message: Message) -> bool:
 
     if text == MENU_LEGAL:
         await start_legal_setup(message, reset=True)
+        return True
+
+    if text == MENU_LEGAL_SURCHARGE:
+        await start_legal_surcharge_setup(message, reset=True)
         return True
 
     if text == MENU_PHYSICAL:
@@ -3874,6 +4078,7 @@ async def main() -> None:
 
     ensure_excel_file(CLIENT_TYPE_PHYSICAL)
     ensure_excel_file(CLIENT_TYPE_LEGAL)
+    ensure_excel_file(CLIENT_TYPE_LEGAL_SURCHARGE)
     if not emu_database_has_core_data() or not emu_database_is_fresh():
         logger.info("EMU local database is missing or stale, refreshing from API")
         await refresh_emu_database()
