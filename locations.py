@@ -287,6 +287,7 @@ EXTRA_NAMES: dict[str, tuple[str, ...]] = {
     "Samarqand tumani": ("Gulobod", "Gulbahor", "Seliski"),
     "Qo‘shrabot tumani": ("Qoshrabod", "Qoshrabot"),
     "Ishtixon tumani": ("Ishtihon",),
+    "Tayloq tumani": ("Toyloq", "Toyloq tumani"),
     # Surxondaryo
     "Denov tumani": ("Denau", "Denov", "Denou", "Denov shahri", "Beshkapa", "Denov Beshkapa"),
     "Oltinsoy tumani": ("Qorluq", "Korluk", "Oltinsoy", "Oltinsay"),
