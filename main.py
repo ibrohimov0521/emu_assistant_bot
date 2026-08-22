@@ -1838,6 +1838,32 @@ def clean_text(value: Any) -> str:
     return str(value).strip()
 
 
+def format_tracking_datetime(value: Any) -> str:
+    raw = clean_text(value)
+    if not raw:
+        return ""
+
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        parsed = None
+
+    if parsed is None:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                parsed = datetime.strptime(raw, fmt)
+                break
+            except ValueError:
+                continue
+
+    if parsed is None:
+        return raw
+    if raw and len(raw) <= 10:
+        return parsed.strftime("%d.%m.%Y")
+    return parsed.strftime("%d.%m.%Y %H:%M")
+
+
 def clean_name(value: Any) -> str:
     name = clean_text(value)
     if not name or name.lower() in {"mijoz", "noma'lum", "nomalum", "unknown", "customer"}:
@@ -2961,8 +2987,8 @@ def format_tracking_result(result: dict[str, Any], question: str) -> str:
         lines.append(f"{labels['status_title']}: {status_title}")
 
     optional_pairs = [
-        (labels["created"], clean_text(parcel.get("created_at"))),
-        (labels["receiver_date"], clean_text(detail.get("receiver_date"))),
+        (labels["created"], format_tracking_datetime(parcel.get("created_at"))),
+        (labels["receiver_date"], format_tracking_datetime(detail.get("receiver_date"))),
         (labels["price"], clean_text(parcel.get("cod_price")) or clean_text(detail.get("price"))),
         (labels["weight"], clean_text(detail.get("weight")) or clean_text(parcel.get("weight"))),
         (labels["quantity"], clean_text(detail.get("quantity"))),
@@ -2973,7 +2999,7 @@ def format_tracking_result(result: dict[str, Any], question: str) -> str:
             lines.append(f"{label}: {value}")
 
     if delivered_date_value:
-        lines.append(f"{labels['delivered_to']}: {delivered_date_value}")
+        lines.append(f"{labels['delivered_to']}: {format_tracking_datetime(delivered_date_value)}")
     elif delivered_to_value and not re.search(r"\bcfg\b", delivered_to_value, re.IGNORECASE):
         lines.append(f"{labels['delivered_to']}: {delivered_to_value}")
 
@@ -2997,7 +3023,7 @@ def format_tracking_result(result: dict[str, Any], question: str) -> str:
         seen_history_rows: set[tuple[str, str, str]] = set()
         shown_count = 0
         for item in sorted_history:
-            event_time = clean_text(item.get("event_time"))
+            event_time = format_tracking_datetime(item.get("event_time"))
             event_town = clean_text(item.get("event_town"))
             item_status = item.get("status") if isinstance(item.get("status"), dict) else {}
             item_status_name = (
