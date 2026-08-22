@@ -33,8 +33,8 @@ OFFICE_SENDER = {
     "cipher_prefix": "ABC",
 }
 
-ADDRESS_COLUMN = 3
-LOCATION_COLUMN = 15
+ADDRESS_COLUMN = 4
+LOCATION_COLUMN = 16
 REVIEW_COLUMN = -1
 
 
@@ -114,7 +114,7 @@ class PrepareRowsTests(unittest.TestCase):
     def test_legal_client_row_layout(self):
         sender = dict(OFFICE_SENDER, client_type=main.CLIENT_TYPE_LEGAL)
         rows = main.prepare_rows([customer("Денов тумани")], sender)
-        self.assertEqual("Денау", rows[0][10])
+        self.assertEqual("Денау", rows[0][11])
         self.assertEqual("23", rows[0][ADDRESS_COLUMN])
 
 

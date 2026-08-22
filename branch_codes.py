@@ -28,6 +28,8 @@ from locations import (
     name_keys_for_server,
     normalize_location_key,
     offices_for_server,
+    region_center_server,
+    region_offices_for_server,
 )
 
 logger = logging.getLogger(__name__)
@@ -255,12 +257,20 @@ def branch_code_for_address(recipient_location: str, address: Any) -> tuple[str,
         return "", ""
 
     records = branch_records_for_names(offices_for_server(recipient_location))
+    fallback_note = ""
     if not records:
         records = [
             record
             for record in load_branch_code_records()
             if branch_record_matches_location(record, recipient_location)
         ]
+    if not records:
+        region_records = branch_records_for_names(region_offices_for_server(recipient_location))
+        if region_records:
+            records = region_records
+            fallback_note = (
+                f"aniq filial topilmadi, {region_center_server(recipient_location)} markaziy filiali tanlandi"
+            )
 
     detail_tokens = address_detail_tokens(address, recipient_location)
     record = None
@@ -271,6 +281,9 @@ def branch_code_for_address(recipient_location: str, address: Any) -> tuple[str,
     if record is None:
         record = best_branch_record(records, address)
     if record is not None:
-        return record.code, ""
+        note = fallback_note
+        if fallback_note and address_match_tokens(address):
+            note = f"{fallback_note} ({_text(address)})"
+        return record.code, note
 
-    return "", ""
+    return "", f"aniq filial topilmadi ({_text(address) or recipient_location})"
