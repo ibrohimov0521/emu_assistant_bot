@@ -9,6 +9,7 @@ data/approved_users.json
 data/access_requests.json
 data/user_sessions.json
 data/user_collections.json
+data/shipment_numbering.json
 data/users/
 data/emu_database.json
 mingit/

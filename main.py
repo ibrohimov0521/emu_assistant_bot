@@ -72,6 +72,7 @@ APPROVED_USERS_PATH = DATA_DIR / "approved_users.json"
 ACCESS_REQUESTS_PATH = DATA_DIR / "access_requests.json"
 USER_SESSIONS_PATH = DATA_DIR / "user_sessions.json"
 USER_COLLECTIONS_PATH = DATA_DIR / "user_collections.json"
+SHIPMENT_NUMBERING_PATH = DATA_DIR / "shipment_numbering.json"
 USERS_DIR = DATA_DIR / "users"
 EMU_DATABASE_PATH = DATA_DIR / "emu_database.json"
 try:
@@ -80,6 +81,7 @@ except ZoneInfoNotFoundError:
     APP_TZ = timezone(timedelta(hours=5), name="Asia/Tashkent")
 
 PHYSICAL_HEADERS = [
+    "№",
     "Номер",
     "Компания-получатель",
     "ФИО получателя",
@@ -100,6 +102,7 @@ PHYSICAL_HEADERS = [
 ]
 
 LEGAL_HEADERS = [
+    "№",
     "Номер",
     "Компания-получатель",
     "ФИО получателя",
@@ -115,6 +118,7 @@ LEGAL_HEADERS = [
 ]
 
 LEGAL_SURCHARGE_HEADERS = [
+    "№",
     "Номер",
     "Компания-получатель",
     "ФИО получателя",
@@ -155,6 +159,13 @@ access_request_sent_at: dict[int, float] = {}
 service_states: dict[int, dict[str, Any]] = {}
 emu_api_cache: dict[str, tuple[float, Any]] = {}
 emu_database_cache: dict[str, Any] | None = None
+shipment_numbering_cache: dict[str, Any] | None = None
+
+DISPLAY_NUMBER_INDEX = 0
+IMPORT_NUMBER_INDEX = 1
+CIPHER_INDEX = 6
+NOTE_INDEX = 8
+CIPHER_COLUMN = CIPHER_INDEX + 1
 emu_database_lock = asyncio.Lock()
 
 SUCCESS_NOTICE_INTERVAL_SECONDS = 12
@@ -406,6 +417,112 @@ def load_user_collections() -> dict[str, list[dict[str, Any]]]:
 
 def save_user_collections() -> None:
     save_json_dict(USER_COLLECTIONS_PATH, user_collections)
+
+
+def empty_shipment_numbering_state() -> dict[str, Any]:
+    return {
+        "next_user_code": 1,
+        "users": {},
+    }
+
+
+def load_shipment_numbering_state() -> dict[str, Any]:
+    global shipment_numbering_cache
+    if shipment_numbering_cache is not None:
+        return shipment_numbering_cache
+
+    data = load_json_dict(SHIPMENT_NUMBERING_PATH)
+    state = empty_shipment_numbering_state()
+    if isinstance(data, dict):
+        state.update({key: value for key, value in data.items() if key in state})
+    if not isinstance(state.get("users"), dict):
+        state["users"] = {}
+    if not isinstance(state.get("next_user_code"), int):
+        try:
+            state["next_user_code"] = int(state.get("next_user_code") or 1)
+        except (TypeError, ValueError):
+            state["next_user_code"] = 1
+    shipment_numbering_cache = state
+    return state
+
+
+def save_shipment_numbering_state(state: dict[str, Any]) -> None:
+    global shipment_numbering_cache
+    save_json_dict(SHIPMENT_NUMBERING_PATH, state)
+    shipment_numbering_cache = state
+
+
+def user_code_for_chat(chat_id: int) -> str:
+    state = load_shipment_numbering_state()
+    users = state.setdefault("users", {})
+    key = str(chat_id) if chat_id > 0 else "system"
+    user_state = users.get(key)
+    if isinstance(user_state, dict):
+        existing_code = clean_text(user_state.get("code"))
+        if re.fullmatch(r"\d{3}", existing_code):
+            return existing_code
+
+    if chat_id <= 0:
+        users[key] = {
+            "code": "000",
+            "next_shipment": int((user_state or {}).get("next_shipment") or 1) if isinstance(user_state, dict) else 1,
+        }
+        save_shipment_numbering_state(state)
+        return "000"
+
+    next_user_code = int(state.get("next_user_code") or 1)
+    assigned_code = f"{next_user_code:03d}"
+    users[key] = {
+        "code": assigned_code,
+        "next_shipment": 1,
+    }
+    state["next_user_code"] = next_user_code + 1
+    save_shipment_numbering_state(state)
+    return assigned_code
+
+
+def next_import_number(chat_id: int) -> str:
+    state = load_shipment_numbering_state()
+    users = state.setdefault("users", {})
+    key = str(chat_id) if chat_id > 0 else "system"
+    user_state = users.get(key)
+    if not isinstance(user_state, dict):
+        user_state = {
+            "code": user_code_for_chat(chat_id),
+            "next_shipment": 1,
+        }
+        users[key] = user_state
+
+    user_code = clean_text(user_state.get("code"))
+    if not re.fullmatch(r"\d{3}", user_code):
+        user_code = user_code_for_chat(chat_id)
+        user_state = users.setdefault(key, {})
+        user_state["code"] = user_code
+
+    try:
+        next_shipment = int(user_state.get("next_shipment") or 1)
+    except (TypeError, ValueError):
+        next_shipment = 1
+
+    import_number = f"BT{user_code}{next_shipment:05d}"
+    user_state["next_shipment"] = next_shipment + 1
+    users[key] = user_state
+    save_shipment_numbering_state(state)
+    return import_number
+
+
+def chat_id_from_excel_path(path: Path) -> int:
+    try:
+        if path.parent.parent == USERS_DIR and path.parent.name.isdigit():
+            return int(path.parent.name)
+    except Exception:
+        return 0
+    return 0
+
+
+def previous_headers_for_client_type(client_type: str) -> list[str]:
+    current = headers_for_client_type(client_type)
+    return current[1:] if len(current) > 1 else current
 
 
 def user_dir(chat_id: int) -> Path:
@@ -1622,6 +1739,18 @@ def ensure_workbook_schema(path: Path, headers: list[str]) -> None:
     try:
         sheet = workbook.active
         current_headers = [sheet.cell(1, col).value for col in range(1, len(headers) + 1)]
+        client_type = CLIENT_TYPE_PHYSICAL
+        if headers == LEGAL_HEADERS:
+            client_type = CLIENT_TYPE_LEGAL
+        elif headers == LEGAL_SURCHARGE_HEADERS:
+            client_type = CLIENT_TYPE_LEGAL_SURCHARGE
+        previous_headers = previous_headers_for_client_type(client_type)
+        previous_header_values = [sheet.cell(1, col).value for col in range(1, len(previous_headers) + 1)]
+        header_to_source = {
+            clean_text(sheet.cell(1, col).value): col
+            for col in range(1, sheet.max_column + 1)
+            if clean_text(sheet.cell(1, col).value)
+        }
 
         if current_headers == headers and sheet.max_column == len(headers):
             return
@@ -1631,13 +1760,28 @@ def ensure_workbook_schema(path: Path, headers: list[str]) -> None:
             workbook.save(path)
             return
 
+        if previous_header_values == previous_headers:
+            rows: list[list[Any]] = []
+            chat_id = chat_id_from_excel_path(path)
+            display_number = 1
+            for row_index in range(2, sheet.max_row + 1):
+                values = [sheet.cell(row_index, col).value for col in range(1, len(previous_headers) + 1)]
+                if not any(value not in (None, "") for value in values):
+                    continue
+                rows.append([display_number, next_import_number(chat_id), *values[1:]])
+                display_number += 1
+
+            sheet.delete_rows(1, sheet.max_row)
+            apply_template_header(sheet, headers)
+            for row in rows:
+                sheet.append(row)
+            if sheet.max_column > len(headers):
+                sheet.delete_cols(len(headers) + 1, sheet.max_column - len(headers))
+            workbook.save(path)
+            return
+
         first_row_has_data = any(value not in (None, "") for value in current_headers)
         if first_row_has_data:
-            header_to_source = {
-                clean_text(sheet.cell(1, col).value): col
-                for col in range(1, sheet.max_column + 1)
-                if clean_text(sheet.cell(1, col).value)
-            }
             if all(header in header_to_source for header in headers):
                 rows = [
                     [sheet.cell(row_index, header_to_source[header]).value for header in headers]
@@ -1690,7 +1834,7 @@ def ensure_excel_file(client_type: str = CLIENT_TYPE_PHYSICAL, path: Path | None
     sheet = workbook.active
     sheet.title = "Шаблон"
     sheet.append(headers)
-    widths = [18, 24, 19, 21, 23, 18, 13, 13, 20, 27, 25, 20, 22, 24, 22, 21, 23]
+    widths = [8, 18, 24, 19, 21, 23, 18, 13, 13, 20, 27, 25, 20, 22, 24, 22, 21, 23, 18]
     for index, width in enumerate(widths, start=1):
         if index <= len(headers):
             sheet.column_dimensions[chr(64 + index)].width = width
@@ -2323,7 +2467,7 @@ def find_last_data_row(sheet: Any) -> int:
 def used_cipher_prefixes(sheet: Any) -> set[str]:
     prefixes: set[str] = set()
     for row_index in range(2, sheet.max_row + 1):
-        code = clean_text(sheet.cell(row_index, 6).value)
+        code = clean_text(sheet.cell(row_index, CIPHER_COLUMN).value)
         match = re.match(r"^(.+?)(\d+)$", code)
         if match:
             prefixes.add(match.group(1).upper())
@@ -2334,7 +2478,7 @@ def next_cipher_index(sheet: Any, prefix: str) -> int:
     highest = 0
     pattern = re.compile(rf"^{re.escape(prefix)}(\d+)$", re.IGNORECASE)
     for row_index in range(2, sheet.max_row + 1):
-        code = clean_text(sheet.cell(row_index, 6).value)
+        code = clean_text(sheet.cell(row_index, CIPHER_COLUMN).value)
         match = pattern.match(code)
         if match:
             highest = max(highest, int(match.group(1)))
@@ -2710,6 +2854,7 @@ def prepare_rows(customers: list[dict[str, Any]], sender: dict[str, str]) -> lis
 
         common_values = [
             "",
+            "",
             clean_name(customer.get("full_name")),
             clean_name(customer.get("full_name")),
             recipient_address,
@@ -2770,18 +2915,20 @@ async def append_customers(customers: list[dict[str, Any]], sender: dict[str, st
             next_row = find_last_data_row(sheet) + 1
             next_number = next_row - 1
             next_code_index = next_cipher_index(sheet, sender["cipher_prefix"]) if sender["cipher_prefix"] else 1
+            chat_id = int(sender.get("chat_id") or 0)
             for row in rows:
                 copy_row_style(sheet, 2, next_row, len(headers))
-                row[0] = next_number
+                row[DISPLAY_NUMBER_INDEX] = next_number
+                row[IMPORT_NUMBER_INDEX] = next_import_number(chat_id)
                 generated_cipher = False
-                if row[5]:
-                    row[5] = clean_text(row[5])
+                if row[CIPHER_INDEX]:
+                    row[CIPHER_INDEX] = clean_text(row[CIPHER_INDEX])
                 else:
-                    row[5] = f"{sender['cipher_prefix']}{next_code_index}" if sender["cipher_prefix"] else ""
-                    generated_cipher = bool(row[5])
+                    row[CIPHER_INDEX] = f"{sender['cipher_prefix']}{next_code_index}" if sender["cipher_prefix"] else ""
+                    generated_cipher = bool(row[CIPHER_INDEX])
                 review = row.pop()
                 if review:
-                    row[7] = "; ".join(part for part in [row[7], review] if part)
+                    row[NOTE_INDEX] = "; ".join(part for part in [row[NOTE_INDEX], review] if part)
                 for column_index, value in enumerate(row, start=1):
                     sheet.cell(next_row, column_index).value = value
                 next_row += 1
