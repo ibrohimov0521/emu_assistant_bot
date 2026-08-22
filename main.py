@@ -1632,7 +1632,7 @@ Ajratiladigan maydonlar:
 - full_name: ism familiya bor bo'lsa
 - phone: barcha telefon raqamlari asl matndagi ko'rinishida; bir nechta bo'lsa hammasini shu maydonga yozing
 - address: manzil
-- recipient_region_ru: oluvchining manzilidan P ustun uchun mos shahar/tuman nomini rus tilida tanlang. Faqat quyidagi ro'yxatdan bittasini yozing, boshqa format yozmang:
+- recipient_region_ru: oluvchining manzilidan Город-получатель ustuni uchun mos shahar/tuman nomini rus tilida tanlang. Faqat quyidagi ro'yxatdan bittasini yozing, boshqa format yozmang:
 {location_list}
 - note: boshqa foydali izohlar, noaniq yoki yo'qolmasligi kerak bo'lgan bo'laklar; telefon raqamlarini bu maydonga yozmang
 - declared_price: agar matnda tovar summasi yoki ustama to'lov summasi bo'lsa faqat son ko'rinishida yozing; masalan 199000. Bo'lmasa bo'sh string.
@@ -2037,7 +2037,7 @@ def format_recipient_address(value: Any, recipient_location: str, delivery_type:
 
 
 def resolve_allowed_recipient_location(customer: dict[str, Any]) -> tuple[str, str]:
-    """P ustun uchun справочникdagi shahar/tuman nomini aniqlaydi.
+    """Город-получатель uchun справочникdagi shahar/tuman nomini aniqlaydi.
 
     Manzil, izoh va AI/Excel dan kelgan hudud nomi ketma-ket tekshiriladi.
     """
@@ -2050,7 +2050,7 @@ def resolve_allowed_recipient_location(customer: dict[str, Any]) -> tuple[str, s
     if not match.server:
         source = address or note or region_hint
         if source:
-            review = f"P ustun uchun shahar/tuman topilmadi ({source})"
+            review = f"Город-получатель uchun shahar/tuman topilmadi ({source})"
     return match.server, review
 
 

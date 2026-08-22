@@ -282,7 +282,7 @@ EXTRA_NAMES: dict[str, tuple[str, ...]] = {
     "Narpay tumani": ("Oqtosh", "Oktosh"),
     "Oqdaryo tumani": ("Loyish", "Layish", "Oqdaryo"),
     "Pastdarg‘om tumani": ("Juma", "Jumabozor"),
-    "Samarqand shahri": ("Samarqant",),
+    "Samarqand shahri": ("Samarqant", "Samaraqand", "Samaraqand"),
     "Samarqand tumani": ("Gulobod", "Gulbahor", "Seliski"),
     "Qo‘shrabot tumani": ("Qoshrabod", "Qoshrabot"),
     "Ishtixon tumani": ("Ishtihon",),
@@ -884,7 +884,7 @@ def resolve_location(*texts: str) -> LocationMatch:
             score=0,
         )
 
-    return LocationMatch(note="P ustun uchun справочникdagi shahar/tuman topilmadi")
+    return LocationMatch(note="Город-получатель uchun справочникdagi shahar/tuman topilmadi")
 
 
 def resolve_server_location(*texts: str) -> str:
