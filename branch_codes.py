@@ -57,6 +57,24 @@ ADDRESS_GENERIC_TOKENS = {
     "dom",
 }
 
+CENTRAL_BRANCH_TOKENS = {
+    "uzbekistan",
+    "uzbekistanskaya",
+    "uzbekistanski",
+    "uzbekiston",
+    "mustaqillik",
+    "mustakillik",
+    "istiklol",
+    "navoi",
+    "amirtemur",
+    "markaz",
+    "center",
+    "central",
+    "sentral",
+    "vokzal",
+    "station",
+}
+
 
 @dataclass(frozen=True)
 class BranchCodeRecord:
@@ -173,12 +191,36 @@ def branch_record_score(record: BranchCodeRecord, address: Any) -> int:
     return score
 
 
+def central_branch_score(record: BranchCodeRecord, recipient_location: str) -> int:
+    record_tokens = branch_record_tokens(record)
+    keys = name_keys_for_server(recipient_location)
+    score = 0
+
+    if normalize_location_key(record.name) in keys:
+        score += 40
+
+    score += sum(25 for token in record_tokens if token in CENTRAL_BRANCH_TOKENS)
+
+    if "emu" in record.address.lower():
+        score += 8
+
+    return score
+
+
 def best_branch_record(records: list[BranchCodeRecord], address: Any) -> BranchCodeRecord | None:
     if not records:
         return None
     if len(records) == 1:
         return records[0]
     return max(records, key=lambda record: branch_record_score(record, address))
+
+
+def central_branch_record(recipient_location: str, records: list[BranchCodeRecord]) -> BranchCodeRecord | None:
+    if not records:
+        return None
+    if len(records) == 1:
+        return records[0]
+    return max(records, key=lambda record: (central_branch_score(record, recipient_location), record.code))
 
 
 def branch_records_for_names(names: tuple[str, ...]) -> list[BranchCodeRecord]:
@@ -220,7 +262,12 @@ def branch_code_for_address(recipient_location: str, address: Any) -> tuple[str,
             if branch_record_matches_location(record, recipient_location)
         ]
 
-    record = default_branch_record(recipient_location, records) if not address_detail_tokens(address, recipient_location) else None
+    detail_tokens = address_detail_tokens(address, recipient_location)
+    record = None
+    if not detail_tokens:
+        record = default_branch_record(recipient_location, records)
+        if record is None:
+            record = central_branch_record(recipient_location, records)
     if record is None:
         record = best_branch_record(records, address)
     if record is not None:

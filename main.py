@@ -2042,12 +2042,16 @@ def resolve_allowed_recipient_location(customer: dict[str, Any]) -> tuple[str, s
     Manzil, izoh va AI/Excel dan kelgan hudud nomi ketma-ket tekshiriladi.
     """
 
-    match = resolve_location(
-        clean_text(customer.get("address")),
-        clean_text(customer.get("note")),
-        clean_text(customer.get("recipient_region_ru")),
-    )
-    return match.server, match.note
+    address = clean_text(customer.get("address"))
+    note = clean_text(customer.get("note"))
+    region_hint = clean_text(customer.get("recipient_region_ru"))
+    match = resolve_location(address, note, region_hint)
+    review = match.note
+    if not match.server:
+        source = address or note or region_hint
+        if source:
+            review = f"P ustun uchun shahar/tuman topilmadi ({source})"
+    return match.server, review
 
 
 def parse_bool(value: str) -> str | None:
