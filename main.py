@@ -179,29 +179,29 @@ ACCESS_REQUEST_INTERVAL_SECONDS = 60
 OPENAI_MAX_RETRIES = max(1, int(os.getenv("OPENAI_MAX_RETRIES", "4")))
 OPENAI_RETRY_BASE_SECONDS = max(1, int(os.getenv("OPENAI_RETRY_BASE_SECONDS", "2")))
 
-MENU_COLLECT = "📥 Excel ga yig'ish"
-MENU_OFFICES = "🏢 Ofislar ro'yxati"
+MENU_COLLECT = "📥 Yig'ish"
+MENU_OFFICES = "📍 Ofislar"
 MENU_CALCULATOR = "🧮 Kalkulyator"
 MENU_TRACKING = "📦 Treking"
-MENU_AI_ASSISTANT = "🤖 AI yordamchi"
+MENU_AI_ASSISTANT = "💬 Yordamchi"
 MENU_ARCHIVE = "🗂 Arxiv"
 MENU_SETTINGS = "⚙️ Sozlamalar"
 MENU_BACK = "⬅️ Orqaga"
 MENU_LEGAL = "🏢 Yuridik mijoz"
 MENU_LEGAL_SURCHARGE = "💰 Ustama to'lovli"
 MENU_PHYSICAL = "👤 ФИЗ ЛИЦО"
-MENU_EXCEL_FILE = "📊 Excel fayl"
-MENU_TEMPLATE_FILE = "📄 Shablon"
+MENU_EXCEL_FILE = "📄 Excel fayllar"
+MENU_TEMPLATE_FILE = "🧾 Faol shablon"
 MENU_CURRENT_TEMPLATES = "📑 Joriy shablonlar"
 MENU_CLEAR = "🧹 Ro'yxatni tozalash"
 MENU_RESET_SETUP = "✏️ Jo'natuvchi sozlamalari"
 MENU_ACCESS_STATUS = "🔐 Ruxsat holati"
-MENU_USERS_STATUS = "👥 Userlar holati"
+MENU_USERS_STATUS = "👥 Userlar"
 MENU_REFRESH_EMU_DB = "🔄 EMU bazani yangilash"
 MENU_EMU_DB_STATUS = "📚 EMU baza holati"
 MENU_NEXT_PAGE = "➡️ Keyingi"
 MENU_PREV_PAGE = "⬅️ Oldingi"
-MENU_SEARCH = "🔎 Qidirish"
+MENU_SEARCH = "🔎 Ofis qidirish"
 MENU_CANCEL = "❌ Bekor qilish"
 MENU_SKIP = "⏭️ O'tkazib yuborish"
 MENU_DO_OFFICE = "🏢 ДО ОФИСА"
@@ -227,10 +227,13 @@ MENU_TEXTS = {
     MENU_USERS_STATUS,
     MENU_REFRESH_EMU_DB,
     MENU_EMU_DB_STATUS,
+    "Yig'ish",
     "Excel ga yig'ish",
+    "Ofislar",
     "Ofislar ro'yxati",
     "Kalkulyator",
     "Treking",
+    "Yordamchi",
     "AI yordamchi",
     "Arxiv",
     "Sozlamalar",
@@ -260,10 +263,13 @@ EMU_DB_REFRESH_INTERVAL_SECONDS = int(os.getenv("EMU_DB_REFRESH_INTERVAL_DAYS", 
 OFFICES_PAGE_SIZE = 12
 
 MENU_ALIASES = {
+    "Yig'ish": MENU_COLLECT,
     "Excel ga yig'ish": MENU_COLLECT,
+    "Ofislar": MENU_OFFICES,
     "Ofislar ro'yxati": MENU_OFFICES,
     "Kalkulyator": MENU_CALCULATOR,
     "Treking": MENU_TRACKING,
+    "Yordamchi": MENU_AI_ASSISTANT,
     "AI yordamchi": MENU_AI_ASSISTANT,
     "Arxiv": MENU_ARCHIVE,
     "Sozlamalar": MENU_SETTINGS,
@@ -271,7 +277,9 @@ MENU_ALIASES = {
     "Yuridik mijoz": MENU_LEGAL,
     "Ustama to'lovli": MENU_LEGAL_SURCHARGE,
     "ФИЗ ЛИЦО": MENU_PHYSICAL,
+    "Excel fayllar": MENU_EXCEL_FILE,
     "Excel fayl": MENU_EXCEL_FILE,
+    "Faol shablon": MENU_TEMPLATE_FILE,
     "Shablon": MENU_TEMPLATE_FILE,
     "Joriy shablonlar": MENU_CURRENT_TEMPLATES,
     "Ro'yxatni tozalash": MENU_CLEAR,
@@ -1105,7 +1113,7 @@ def format_branch_card(branch: dict[str, Any], index: int) -> str:
     address_text = address or "ko'rsatilmagan"
     work_text = work_time or "ko'rsatilmagan"
     return (
-        f"{index}. 🏢 {clean_text(branch.get('name'))}\n"
+        f"+{index}. 🏢 {clean_text(branch.get('name'))}\n"
         f"📍 Hudud: {region}, {city}\n"
         f"🧭 Manzil: {address_text}\n"
         f"📞 Tel: {phone}\n"
@@ -1116,10 +1124,10 @@ def format_branch_card(branch: dict[str, Any], index: int) -> str:
 
 def format_branches_list(branches: list[dict[str, Any]], title: str, limit: int = OFFICES_PAGE_SIZE) -> str:
     if not branches:
-        return f"{title}\n\nBu hudud uchun ofis topilmadi."
+        return f"📍 {title}\n\nBu hudud uchun ofis topilmadi."
 
     visible = branches[:limit]
-    lines = [f"🏢 {title}", f"📌 Jami: {len(branches)} ta ofis", "🔤 Tartib: alfavit bo'yicha"]
+    lines = [f"📍 {title}", f"📌 Jami: {len(branches)} ta ofis", "🔤 Tartib: alfavit bo'yicha"]
     lines.extend(format_branch_card(branch, index) for index, branch in enumerate(visible, start=1))
     if len(branches) > limit:
         lines.append(f"\n➡️ Yana {len(branches) - limit} ta ofis bor. Aniq tuman bo'yicha qidirsak, ro'yxat qisqaradi.")
@@ -1266,11 +1274,11 @@ def format_office_count_answer(branches: list[dict[str, Any]]) -> str:
     names = [clean_text(branch.get("name")) for branch in branches if clean_text(branch.get("name"))]
     unique_names = list(dict.fromkeys(names))
     region_name = clean_text(branches[0].get("_region_name")) or "tanlangan hudud"
-    lines = [f"{region_name} bo'yicha {len(branches)} ta ofis bor."]
+    lines = [f"📍 {region_name} bo'yicha {len(branches)} ta ofis bor."]
     if unique_names:
         lines.append("")
         for index, name in enumerate(unique_names[:20], start=1):
-            lines.append(f"{index}. {name}")
+            lines.append(f"+{index}. {name}")
         if len(unique_names) > 20:
             lines.append(f"... yana {len(unique_names) - 20} ta ofis bor.")
     return "\n".join(lines)
@@ -1467,10 +1475,9 @@ def has_bot_access(user_id: int) -> bool:
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=MENU_COLLECT)],
+            [KeyboardButton(text=MENU_COLLECT), KeyboardButton(text=MENU_TRACKING)],
             [KeyboardButton(text=MENU_OFFICES), KeyboardButton(text=MENU_CALCULATOR)],
-            [KeyboardButton(text=MENU_TRACKING), KeyboardButton(text=MENU_AI_ASSISTANT)],
-            [KeyboardButton(text=MENU_ARCHIVE), KeyboardButton(text=MENU_SETTINGS)],
+            [KeyboardButton(text=MENU_AI_ASSISTANT), KeyboardButton(text=MENU_SETTINGS)],
         ],
         resize_keyboard=True,
     )
@@ -1480,7 +1487,7 @@ def collect_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=MENU_LEGAL), KeyboardButton(text=MENU_LEGAL_SURCHARGE)],
-            [KeyboardButton(text=MENU_PHYSICAL)],
+            [KeyboardButton(text=MENU_PHYSICAL), KeyboardButton(text=MENU_ARCHIVE)],
             [KeyboardButton(text=MENU_BACK)],
         ],
         resize_keyboard=True,
@@ -1490,7 +1497,7 @@ def collect_menu_keyboard() -> ReplyKeyboardMarkup:
 def archive_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=MENU_EXCEL_FILE)],
+            [KeyboardButton(text=MENU_EXCEL_FILE), KeyboardButton(text=MENU_TEMPLATE_FILE)],
             [KeyboardButton(text=MENU_CLEAR)],
             [KeyboardButton(text=MENU_BACK)],
         ],
@@ -1506,7 +1513,8 @@ def settings_menu_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:
     ]
     if admin:
         keyboard.insert(0, [KeyboardButton(text=MENU_USERS_STATUS)])
-        keyboard.insert(1, [KeyboardButton(text=MENU_REFRESH_EMU_DB), KeyboardButton(text=MENU_EMU_DB_STATUS)])
+        keyboard.insert(1, [KeyboardButton(text=MENU_REFRESH_EMU_DB)])
+        keyboard.insert(2, [KeyboardButton(text=MENU_EMU_DB_STATUS)])
     else:
         keyboard.insert(0, [KeyboardButton(text=MENU_ACCESS_STATUS)])
     return ReplyKeyboardMarkup(
@@ -1523,7 +1531,8 @@ def settings_keyboard_for_message(message: Message) -> ReplyKeyboardMarkup:
 def collect_active_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=MENU_EXCEL_FILE), KeyboardButton(text=MENU_TEMPLATE_FILE)],
+            [KeyboardButton(text=MENU_EXCEL_FILE), KeyboardButton(text=MENU_ARCHIVE)],
+            [KeyboardButton(text=MENU_TEMPLATE_FILE)],
             [KeyboardButton(text=MENU_BACK)],
         ],
         resize_keyboard=True,
@@ -2375,13 +2384,14 @@ async def send_main_menu(message: Message, text: str | None = None) -> None:
         message,
         text
         or (
-            "Asosiy menyu.\n\n"
-            "Excel ga yig'ish - yangi jo'natmalar ro'yxatini yig'ish.\n"
-            "Ofislar ro'yxati - viloyat bo'yicha filiallarni ko'rish.\n"
-            "Kalkulyator - EMU API orqali narx hisoblash.\n"
-            "AI yordamchi - savol berib kerakli bo'limdan ma'lumot olish.\n"
-            "Arxiv - tayyor Excel va shablon fayllar.\n"
-            "Sozlamalar - jo'natuvchi ma'lumotlari va ruxsat holati."
+            "🏠 Asosiy menyu\n\n"
+            "Kerakli bo'limni pastdagi tugmalardan tanlang.\n\n"
+            "📥 Yig'ish - jo'natmalarni Excelga tayyorlaydi\n"
+            "📍 Ofislar - filiallarni viloyat bo'yicha ko'rsatadi\n"
+            "🧮 Kalkulyator - narx va muddatni hisoblaydi\n"
+            "📦 Treking - jo'natma holatini tekshiradi\n"
+            "💬 Yordamchi - savollarga javob beradi\n"
+            "⚙️ Sozlamalar - shablon va tizim holati"
         ),
         reply_markup=main_menu_keyboard(),
     )
@@ -3733,16 +3743,16 @@ async def start_handler(message: Message) -> None:
         return
     await send_main_menu(
         message,
-        "Assalomu alaykum!\n\n"
-        "Bot mijoz ma'lumotlarini matn, rasm yoki Excel fayldan ajratib, Excel shablonga yozadi.\n"
-        "Quyidagi bo'limlardan birini tanlang.",
+        "👋 Assalomu alaykum!\n\n"
+        "Bu bot mijoz ma'lumotlarini matn, rasm yoki Excel fayldan ajratib, kerakli shablonga joylaydi.\n\n"
+        "Ishni boshlash uchun kerakli bo'limni tanlang.",
     )
 
 
 async def access_contact_handler(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else message.chat.id
     if has_bot_access(user_id):
-        await send_main_menu(message, "Sizda ruxsat bor. Asosiy menyu:")
+        await send_main_menu(message, "✅ Sizga ruxsat berilgan.\n\n🏠 Asosiy menyu ochildi.")
         return
 
     contact = message.contact
@@ -3774,14 +3784,14 @@ async def help_handler(message: Message) -> None:
         return
     await safe_answer(
         message,
-        "Foydalanish yo'riqnomasi:\n\n"
-        "1. Excel ga yig'ish bo'limiga kiring.\n"
-        "2. Yuridik mijoz, Ustama to'lovli yoki ФИЗ ЛИЦО yo'nalishini tanlang.\n"
+        "📘 Foydalanish yo'riqnomasi\n\n"
+        "1. 📥 Yig'ish bo'limiga kiring.\n"
+        "2. 🏢 Yuridik, 💰 Ustama to'lovli yoki 👤 ФИЗ ЛИЦО yo'nalishini tanlang.\n"
         "3. Bot so'ragan sozlamalarga javob bering.\n"
         "4. Mijoz ma'lumotlarini matn, rasm yoki .xlsx Excel qilib yuboring.\n"
-        "5. Treking bo'limida trek raqam bo'yicha holatni tekshirishingiz mumkin.\n"
-        "6. Tayyor faylni Arxiv bo'limidan oling.\n\n"
-        "Har bir ichki bo'limda Orqaga tugmasi bor.",
+        "5. 📦 Treking bo'limida jo'natma holatini tekshiring.\n"
+        "6. Tayyor faylni 🗂 Arxiv ichidan oling.\n\n"
+        f"Har bir ichki bo'limda {MENU_BACK} tugmasi bor.",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -3824,7 +3834,7 @@ async def excel_handler(message: Message) -> None:
     if not await ensure_user_access(message):
         return
     if message.chat.id not in sender_sessions:
-        await safe_answer(message, "Hozircha faol yig'ish fayli yo'q. Avval Excel ga yig'ish bo'limidan yangi yig'ishni boshlang.")
+        await safe_answer(message, "Hozircha faol yig'ish fayli yo'q. Avval 📥 Yig'ish bo'limidan yangi yig'ishni boshlang.")
         return
     client_type = current_client_type(message.chat.id)
     path = ensure_sender_collection(sender_sessions[message.chat.id])
@@ -3934,13 +3944,14 @@ async def show_offices_menu(message: Message) -> None:
         regions = await get_emu_regions()
     except Exception as error:
         logger.exception("EMU regions loading failed")
-        await safe_answer(message, f"Ofislar ro'yxatini olishda xatolik: {error}")
+        await safe_answer(message, f"Ofislar ma'lumotini olishda xatolik: {error}")
         return
 
     await safe_answer(
         message,
-        "🏢 Ofislar ro'yxati\n\n"
-        "📍 Viloyatni tanlang. Keyin shu hududdagi ofislar sahifalab chiqadi.",
+        "📍 EMU ofislari\n\n"
+        "Avval viloyatni tanlang.\n"
+        "Keyin ofislar alfavit bo'yicha sahifalab chiqadi.",
         reply_markup=region_reply_keyboard(regions, state),
     )
 
@@ -3958,7 +3969,7 @@ async def show_calculator_menu(message: Message) -> None:
     await safe_answer(
         message,
         "🧮 Kalkulyator\n\n"
-        "📦 Jo'natilish nuqtasining viloyatini tanlang.",
+        "Hisob-kitobni boshlash uchun jo'natilish viloyatini tanlang.",
         reply_markup=region_reply_keyboard(regions, state),
     )
 
@@ -3967,14 +3978,15 @@ async def show_ai_assistant(message: Message) -> None:
     service_states[message.chat.id] = {"mode": "ai"}
     await safe_answer(
         message,
-        "AI yordamchi bo'limi.\n\n"
-        "EMU bo'yicha savolingizni yozing. Bot o'zbek lotin, o'zbek kirill va ruscha savollarni tushunishga harakat qiladi.\n\n"
+        "💬 AI yordamchi\n\n"
+        "EMU bo'yicha savolingizni yozing.\n"
+        "Bot o'zbek lotin, o'zbek kirill va ruscha savollarni tushunishga harakat qiladi.\n\n"
         "Masalan:\n"
-        "- Samarqand ofislari qayerda?\n"
-        "- Andijondan Toshkentga 2 kg qancha?\n"
-        "- EMU005776995 holati qanday?\n"
-        "- До офиса и На дом фарқи нима?\n"
-        "- Пахтачида офис борми?\n\n"
+        "• Samarqand ofislari qayerda?\n"
+        "• Andijondan Toshkentga 2 kg qancha?\n"
+        "• EMU005776995 holati qanday?\n"
+        "• До офиса va На дом farqi nima?\n"
+        "• Пахтачида офис борми?\n\n"
         f"Chiqish uchun {MENU_BACK} tugmasini bosing.",
         reply_markup=reply_keyboard([], add_back=True),
     )
@@ -3985,7 +3997,7 @@ async def show_tracking_menu(message: Message) -> None:
     await safe_answer(
         message,
         "📦 Treking bo'limi\n\n"
-        "Trek raqami, shtrixkod yoki ichki buyurtma raqamini yuboring.\n"
+        "Trek raqami yoki shtrixkodni yuboring.\n"
         "Masalan: EMU005776995 yoki FUR0118",
         reply_markup=reply_keyboard([], add_back=True),
     )
@@ -4017,7 +4029,7 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
         service_states.pop(chat_id, None)
         await callback.answer()
         if callback.message:
-            await safe_edit_text(callback.message, "Asosiy menyuga qaytdingiz.")
+            await safe_edit_text(callback.message, "✅ Qaytildi.")
             await safe_send_message(callback.bot, chat_id, "🏠 Asosiy menyu", reply_markup=main_menu_keyboard())
         return
 
@@ -4050,7 +4062,7 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
                 state.update({"sender_city_id": TASHKENT_CITY_ID, "step": "receiver_region"})
                 regions = await get_emu_regions()
                 if callback.message:
-                    await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                    await safe_edit_text(callback.message, "✅ Tanlandi.")
                     await safe_send_message(
                         callback.bot,
                         chat_id,
@@ -4061,7 +4073,7 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
             cities = await get_emu_cities(region_id)
             state["step"] = "sender_city"
             if callback.message:
-                await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                await safe_edit_text(callback.message, "✅ Tanlandi.")
                 await safe_send_message(
                     callback.bot,
                     chat_id,
@@ -4077,7 +4089,7 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
             regions = await get_emu_regions()
             await callback.answer()
             if callback.message:
-                await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                await safe_edit_text(callback.message, "✅ Tanlandi.")
                 await safe_send_message(
                     callback.bot,
                     chat_id,
@@ -4094,7 +4106,7 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
             if region_id == TASHKENT_REGION_ID:
                 state.update({"receiver_city_id": TASHKENT_CITY_ID, "step": "service"})
                 if callback.message:
-                    await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                    await safe_edit_text(callback.message, "✅ Tanlandi.")
                     await safe_send_message(
                         callback.bot,
                         chat_id,
@@ -4105,7 +4117,7 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
             cities = await get_emu_cities(region_id)
             state["step"] = "receiver_city"
             if callback.message:
-                await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                await safe_edit_text(callback.message, "✅ Tanlandi.")
                 await safe_send_message(
                     callback.bot,
                     chat_id,
@@ -4120,7 +4132,7 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
             state.update({"receiver_city_id": city_id, "step": "service"})
             await callback.answer()
             if callback.message:
-                await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                await safe_edit_text(callback.message, "✅ Tanlandi.")
                 await safe_send_message(
                     callback.bot,
                     chat_id,
@@ -4135,7 +4147,7 @@ async def emu_callback_handler(callback: CallbackQuery) -> None:
             state.update({"service_id": service_id, "step": "weight"})
             await callback.answer()
             if callback.message:
-                await safe_edit_text(callback.message, "🧮 Tanlov pastki menyuga o'tkazildi.")
+                await safe_edit_text(callback.message, "✅ Tanlandi.")
                 await safe_send_message(
                     callback.bot,
                     chat_id,
@@ -4158,11 +4170,12 @@ async def show_collect_menu(message: Message) -> None:
     service_states[message.chat.id] = {"mode": "collect"}
     await safe_answer(
         message,
-        "Jo'natmalarni yig'ish bo'limi.\n\n"
-        "Yuridik mijoz - jo'natuvchi ma'lumotlari so'ralmaydi.\n"
-        "Ustama to'lovli - yuridik shablon, IKPU va tovar summasi bilan ishlaydi.\n"
-        "ФИЗ ЛИЦО - jo'natuvchi ma'lumotlari odatdagidek so'raladi.\n\n"
-        "Kerakli yo'nalishni tanlang.",
+        "📥 Jo'natmalarni yig'ish\n\n"
+        "Kerakli yo'nalishni tanlang:\n"
+        "🏢 Yuridik mijoz\n"
+        "💰 Ustama to'lovli\n"
+        "👤 ФИЗ ЛИЦО\n\n"
+        "Arxiv ham shu bo'lim ichida turadi.",
         reply_markup=collect_menu_keyboard(),
     )
 
@@ -4172,23 +4185,23 @@ async def show_archive_menu(message: Message) -> None:
     collections = user_collections.get(str(message.chat.id), [])
     if collections:
         lines = [
-            "Arxiv bo'limi.",
+            "🗂 Arxiv",
             "",
-            f"Saqlangan yig'ishlar: {len(collections)} ta",
+            f"📦 Saqlangan yig'ishlar: {len(collections)} ta",
         ]
         for index, collection in enumerate(collections[-10:], start=max(1, len(collections) - 9)):
             created = clean_text(collection.get("created_at")) or "sana yo'q"
             sender = clean_text(collection.get("sender_name")) or "jo'natuvchi ko'rsatilmagan"
             rows = int(collection.get("rows") or 0)
-            lines.append(f"{index}. {created} | {sender} | {rows} ta qator")
+            lines.append(f"+{index}. {created} | {sender} | {rows} ta qator")
         lines.append("")
-        lines.append("Excel fayl tugmasi oxirgi 10 ta arxiv faylni yuboradi.")
+        lines.append("📄 Excel fayllar tugmasi oxirgi 10 ta arxiv faylni yuboradi.")
         text = "\n".join(lines)
     else:
         text = (
-            "Arxiv bo'limi.\n\n"
+            "🗂 Arxiv\n\n"
             "Hozircha saqlangan Excel yig'ishlar yo'q.\n"
-            "Excel ga yig'ish bo'limidan yangi yig'ishni boshlang."
+            "Avval 📥 Yig'ish bo'limidan yangi yig'ishni boshlang."
         )
     await safe_answer(
         message,
@@ -4225,16 +4238,17 @@ async def show_settings_menu(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else message.chat.id
     if is_admin(user_id):
         text = (
-            "Sozlamalar bo'limi.\n\n"
-            "Userlar holati - foydalanuvchilar ruxsati va faolligini ko'rsatadi.\n"
-            "EMU bazani yangilash - emu.uz'dan filial va shahar ma'lumotlarini qayta oladi.\n"
-            "Joriy shablonlar - hozir ishlatilayotgan Excel shablon fayllarini yuboradi."
+            "⚙️ Sozlamalar\n\n"
+            "👥 Userlar - ruxsat va faollik holati\n"
+            "🔄 Baza yangilash - EMU ma'lumotlarini qayta yuklaydi\n"
+            "📚 Baza holati - oxirgi yangilanishni ko'rsatadi\n"
+            "📑 Joriy shablonlar - ishlatilayotgan fayllarni yuboradi"
         )
     else:
         text = (
-            "Sozlamalar bo'limi.\n\n"
-            "Ruxsat holati - botdan foydalanish ruxsatini ko'rsatadi.\n"
-            "Joriy shablonlar - hozir ishlatilayotgan Excel shablon fayllarini yuboradi."
+            "⚙️ Sozlamalar\n\n"
+            "🔐 Ruxsat holati - foydalanish holatingizni ko'rsatadi\n"
+            "📑 Joriy shablonlar - ishlatilayotgan fayllarni yuboradi"
         )
     await safe_answer(
         message,
@@ -4325,7 +4339,7 @@ async def handle_menu_message(message: Message) -> bool:
         status = "admin" if is_admin(user_id) else "ruxsat berilgan"
         if not ADMIN_IDS:
             status = "ruxsat tekshiruvi o'chirilgan"
-        await safe_answer(message, f"Ruxsat holati: {status}", reply_markup=settings_keyboard_for_message(message))
+        await safe_answer(message, f"🔐 Ruxsat holati: {status}", reply_markup=settings_keyboard_for_message(message))
         return True
 
     if text == MENU_EMU_DB_STATUS:
@@ -4480,7 +4494,7 @@ async def handle_service_text(message: Message) -> bool:
                 await send_offices_page(message, state, 0)
             except Exception as error:
                 logger.exception("Office list failed")
-                await safe_answer(message, f"⚠️ Ofislar ro'yxatini olishda xatolik: {error}")
+                await safe_answer(message, f"⚠️ Ofislar ma'lumotini olishda xatolik: {error}")
             return True
 
         if step == "browser":
@@ -4794,13 +4808,13 @@ async def setup_bot_commands(bot: Bot) -> None:
         [
             BotCommand(command="start", description="Botni ishga tushirish"),
             BotCommand(command="setup", description="ФИЗ ЛИЦО jo'natuvchi sozlamalari"),
-            BotCommand(command="ofislar", description="EMU ofislar ro'yxati"),
-            BotCommand(command="kalkulyator", description="Yetkazib berish narxini hisoblash"),
-            BotCommand(command="track", description="Trek raqam bo'yicha holatni tekshirish"),
-            BotCommand(command="ai", description="EMU bo'yicha AI yordamchi"),
+            BotCommand(command="ofislar", description="EMU ofislarini ko'rish"),
+            BotCommand(command="kalkulyator", description="Narx va muddatni hisoblash"),
+            BotCommand(command="track", description="Jo'natma holatini tekshirish"),
+            BotCommand(command="ai", description="EMU yordamchi"),
             BotCommand(command="help", description="Foydalanish bo'yicha yordam"),
-            BotCommand(command="excel", description="Excel faylni yuborish"),
-            BotCommand(command="shablon", description="Excel shablonni yuborish"),
+            BotCommand(command="excel", description="Excel fayllarni yuborish"),
+            BotCommand(command="shablon", description="Faol shablonni yuborish"),
             BotCommand(command="clear", description="Ro'yxatni tozalash"),
         ]
     )
