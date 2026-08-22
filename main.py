@@ -169,6 +169,7 @@ OPENAI_RETRY_BASE_SECONDS = max(1, int(os.getenv("OPENAI_RETRY_BASE_SECONDS", "2
 MENU_COLLECT = "📥 Excel ga yig'ish"
 MENU_OFFICES = "🏢 Ofislar ro'yxati"
 MENU_CALCULATOR = "🧮 Kalkulyator"
+MENU_TRACKING = "📦 Treking"
 MENU_AI_ASSISTANT = "🤖 AI yordamchi"
 MENU_ARCHIVE = "🗂 Arxiv"
 MENU_SETTINGS = "⚙️ Sozlamalar"
@@ -196,6 +197,7 @@ MENU_TEXTS = {
     MENU_COLLECT,
     MENU_OFFICES,
     MENU_CALCULATOR,
+    MENU_TRACKING,
     MENU_AI_ASSISTANT,
     MENU_ARCHIVE,
     MENU_SETTINGS,
@@ -215,6 +217,7 @@ MENU_TEXTS = {
     "Excel ga yig'ish",
     "Ofislar ro'yxati",
     "Kalkulyator",
+    "Treking",
     "AI yordamchi",
     "Arxiv",
     "Sozlamalar",
@@ -247,6 +250,7 @@ MENU_ALIASES = {
     "Excel ga yig'ish": MENU_COLLECT,
     "Ofislar ro'yxati": MENU_OFFICES,
     "Kalkulyator": MENU_CALCULATOR,
+    "Treking": MENU_TRACKING,
     "AI yordamchi": MENU_AI_ASSISTANT,
     "Arxiv": MENU_ARCHIVE,
     "Sozlamalar": MENU_SETTINGS,
@@ -750,6 +754,43 @@ async def calculate_emu_delivery(
         ],
     }
     result = await asyncio.to_thread(emu_api_post, "/api/v1/calculator", payload, {"platform": "app"})
+    async with emu_database_lock:
+        database = load_emu_database()
+        calculator_cache = database.setdefault("calculator_cache", {})
+        calculator_cache[cache_key] = {"updated_at": time.time(), "result": result}
+        save_emu_database(database)
+    return result
+
+
+def track_cache_key(code: str) -> str:
+    return f"track:{clean_text(code).upper()}"
+
+
+async def get_emu_tracking(code: str) -> dict[str, Any]:
+    code = clean_text(code).upper()
+    if not code:
+        raise ValueError("Treking raqami bo'sh.")
+
+    database = await ensure_emu_database()
+    calculator_cache = database.setdefault("calculator_cache", {})
+    cache_key = track_cache_key(code)
+    cached = calculator_cache.get(cache_key) if isinstance(calculator_cache, dict) else None
+    if isinstance(cached, dict) and cached.get("result"):
+        return cached["result"]
+
+    summary = await asyncio.to_thread(emu_api_post, "/api/v1/track", {"code": code})
+    parcel = summary.get("parcel") if isinstance(summary, dict) else None
+    if not isinstance(parcel, dict):
+        raise ValueError("Treking ma'lumoti topilmadi.")
+
+    orderno = clean_text(parcel.get("orderno")) or code
+    try:
+        detail = await asyncio.to_thread(emu_api_post, "/api/v1/track/detail", {"orderno": orderno})
+    except Exception as error:
+        logger.warning("Tracking detail fallback for %s: %s", code, error)
+        detail = {}
+    result = {"summary": summary, "detail": detail}
+
     async with emu_database_lock:
         database = load_emu_database()
         calculator_cache = database.setdefault("calculator_cache", {})
@@ -1309,7 +1350,7 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=MENU_COLLECT)],
             [KeyboardButton(text=MENU_OFFICES), KeyboardButton(text=MENU_CALCULATOR)],
-            [KeyboardButton(text=MENU_AI_ASSISTANT)],
+            [KeyboardButton(text=MENU_TRACKING), KeyboardButton(text=MENU_AI_ASSISTANT)],
             [KeyboardButton(text=MENU_ARCHIVE), KeyboardButton(text=MENU_SETTINGS)],
         ],
         resize_keyboard=True,
@@ -2796,6 +2837,151 @@ def ai_answer_style_instruction(question: str) -> str:
     )
 
 
+def tracking_style_labels(question: str) -> dict[str, str]:
+    style = preferred_answer_style(question)
+    if style == "uz_cyrillic":
+        return {
+            "title": "📦 Трекинг натижаси",
+            "code": "Рақам",
+            "status": "Ҳолат",
+            "status_title": "Изоҳ",
+            "order": "Ички рақам",
+            "barcode": "Штрихкод",
+            "created": "Яратилган сана",
+            "receiver_date": "Режадаги сана",
+            "price": "Наложка",
+            "weight": "Оғирлик",
+            "quantity": "Жой сони",
+            "receiver_town": "Қабул қилувчи шаҳар",
+            "delivered_to": "Якун",
+            "courier": "Курьер",
+            "history": "Сўнгги статуслар",
+            "unknown": "номаълум",
+            "not_found": "Трекинг маълумоти топилмади.",
+        }
+    if style == "russian":
+        return {
+            "title": "📦 Результат трекинга",
+            "code": "Номер",
+            "status": "Статус",
+            "status_title": "Пояснение",
+            "order": "Внутренний номер",
+            "barcode": "Штрихкод",
+            "created": "Создан",
+            "receiver_date": "Плановая дата",
+            "price": "Наложенный платеж",
+            "weight": "Вес",
+            "quantity": "Количество мест",
+            "receiver_town": "Город получателя",
+            "delivered_to": "Итог",
+            "courier": "Курьер",
+            "history": "Последние статусы",
+            "unknown": "неизвестно",
+            "not_found": "Информация по трекингу не найдена.",
+        }
+    return {
+        "title": "📦 Treking natijasi",
+        "code": "Raqam",
+        "status": "Holat",
+        "status_title": "Izoh",
+        "order": "Ichki raqam",
+        "barcode": "Shtrixkod",
+        "created": "Yaratilgan sana",
+        "receiver_date": "Rejadagi sana",
+        "price": "Nalojka",
+        "weight": "Og'irlik",
+        "quantity": "Joy soni",
+        "receiver_town": "Qabul qiluvchi shahar",
+        "delivered_to": "Yakun",
+        "courier": "Kuryer",
+        "history": "So'nggi statuslar",
+        "unknown": "noma'lum",
+        "not_found": "Treking ma'lumoti topilmadi.",
+    }
+
+
+def extract_tracking_code(text: str) -> str:
+    cleaned = clean_text(text)
+    if not cleaned:
+        return ""
+    explicit = re.findall(r"\b(?:EMU\d{6,}|[A-Z]{2,}\d{3,}|\d{3,})\b", cleaned.upper())
+    if explicit:
+        return explicit[0]
+    compact = re.sub(r"\s+", "", cleaned.upper())
+    return compact if re.fullmatch(r"[A-Z0-9-]{3,25}", compact) else ""
+
+
+def looks_like_tracking_question(text: str) -> bool:
+    lowered = clean_text(text).casefold()
+    if any(word in lowered for word in ["track", "trek", "treking", "tracking", "status", "статус", "трек", "отслед", "kuzat"]):
+        return True
+    code = extract_tracking_code(text)
+    return bool(code and len(code) >= 3)
+
+
+def format_tracking_result(result: dict[str, Any], question: str) -> str:
+    labels = tracking_style_labels(question)
+    summary = result.get("summary") if isinstance(result, dict) else {}
+    detail = result.get("detail") if isinstance(result, dict) else {}
+    parcel = summary.get("parcel") if isinstance(summary, dict) else {}
+    status = parcel.get("status") if isinstance(parcel, dict) and isinstance(parcel.get("status"), dict) else {}
+    status_i18n = status.get("i18n_name") if isinstance(status.get("i18n_name"), dict) else {}
+    detail_status = detail.get("status") if isinstance(detail, dict) and isinstance(detail.get("status"), dict) else {}
+    history = detail.get("statushistory") or summary.get("status_history") or []
+
+    status_name = (
+        clean_text(status_i18n.get("uz"))
+        or clean_text(status.get("name"))
+        or clean_text(detail_status.get("name"))
+        or labels["unknown"]
+    )
+    status_title = clean_text(detail_status.get("title")) or clean_text(detail.get("deliveredto")) or clean_text(parcel.get("deliveredto"))
+    courier_name = clean_text(detail.get("courier_name"))
+    courier_phone = clean_text(detail.get("courier_phone"))
+
+    lines = [
+        labels["title"],
+        "",
+        f"{labels['code']}: {clean_text(parcel.get('orderno')) or clean_text(detail.get('orderno')) or labels['unknown']}",
+        f"{labels['barcode']}: {clean_text(parcel.get('barcode')) or clean_text(detail.get('barcode') or detail.get('awb')) or labels['unknown']}",
+        f"{labels['status']}: {status_name}",
+    ]
+    if status_title:
+        lines.append(f"{labels['status_title']}: {status_title}")
+
+    optional_pairs = [
+        (labels["order"], clean_text(detail.get("ordercode"))),
+        (labels["created"], clean_text(parcel.get("created_at"))),
+        (labels["receiver_date"], clean_text(detail.get("receiver_date"))),
+        (labels["price"], clean_text(parcel.get("cod_price")) or clean_text(detail.get("price"))),
+        (labels["weight"], clean_text(detail.get("weight")) or clean_text(parcel.get("weight"))),
+        (labels["quantity"], clean_text(detail.get("quantity"))),
+        (labels["receiver_town"], clean_text(detail.get("receiver_town"))),
+        (labels["delivered_to"], clean_text(detail.get("deliveredto"))),
+    ]
+    for label, value in optional_pairs:
+        if value:
+            lines.append(f"{label}: {value}")
+
+    if courier_name or courier_phone:
+        lines.append(f"{labels['courier']}: {' | '.join(part for part in [courier_name, courier_phone] if part)}")
+
+    if isinstance(history, list) and history:
+        lines.append("")
+        lines.append(labels["history"] + ":")
+        for item in history[:5]:
+            if not isinstance(item, dict):
+                continue
+            event_time = clean_text(item.get("event_time"))
+            event_town = clean_text(item.get("event_town"))
+            message = clean_text(item.get("status_message"))
+            parts = [part for part in [event_time, event_town, message] if part]
+            if parts:
+                lines.append(f"- {' | '.join(parts)}")
+
+    return "\n".join(lines)
+
+
 def preprocess_image_bytes(image_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
     try:
         with Image.open(io.BytesIO(image_bytes)) as image:
@@ -3274,7 +3460,8 @@ async def help_handler(message: Message) -> None:
         "2. Yuridik mijoz, Ustama to'lovli yoki ФИЗ ЛИЦО yo'nalishini tanlang.\n"
         "3. Bot so'ragan sozlamalarga javob bering.\n"
         "4. Mijoz ma'lumotlarini matn, rasm yoki .xlsx Excel qilib yuboring.\n"
-        "5. Tayyor faylni Arxiv bo'limidan oling.\n\n"
+        "5. Treking bo'limida trek raqam bo'yicha holatni tekshirishingiz mumkin.\n"
+        "6. Tayyor faylni Arxiv bo'limidan oling.\n\n"
         "Har bir ichki bo'limda Orqaga tugmasi bor.",
         reply_markup=main_menu_keyboard(),
     )
@@ -3296,6 +3483,16 @@ async def calculator_handler(message: Message) -> None:
     if not await ensure_user_access(message):
         return
     await show_calculator_menu(message)
+
+
+async def tracking_handler(message: Message) -> None:
+    if not await ensure_user_access(message):
+        return
+    args = clean_text((message.text or "").partition(" ")[2])
+    if args:
+        await answer_tracking_question(message, args)
+        return
+    await show_tracking_menu(message)
 
 
 async def ai_handler(message: Message) -> None:
@@ -3456,11 +3653,38 @@ async def show_ai_assistant(message: Message) -> None:
         "Masalan:\n"
         "- Samarqand ofislari qayerda?\n"
         "- Andijondan Toshkentga 2 kg qancha?\n"
+        "- EMU005776995 holati qanday?\n"
         "- До офиса и На дом фарқи нима?\n"
         "- Пахтачида офис борми?\n\n"
         f"Chiqish uchun {MENU_BACK} tugmasini bosing.",
         reply_markup=reply_keyboard([], add_back=True),
     )
+
+
+async def show_tracking_menu(message: Message) -> None:
+    service_states[message.chat.id] = {"mode": "tracking"}
+    await safe_answer(
+        message,
+        "📦 Treking bo'limi\n\n"
+        "Trek raqami, shtrixkod yoki ichki buyurtma raqamini yuboring.\n"
+        "Masalan: EMU005776995 yoki FUR0118",
+        reply_markup=reply_keyboard([], add_back=True),
+    )
+
+
+async def answer_tracking_question(message: Message, question: str) -> bool:
+    code = extract_tracking_code(question)
+    if not code:
+        return False
+    try:
+        result = await get_emu_tracking(code)
+        await safe_answer(message, format_tracking_result(result, question))
+        return True
+    except Exception as error:
+        labels = tracking_style_labels(question)
+        logger.exception("Tracking lookup failed")
+        await safe_answer(message, f"{labels['not_found']}\n\n{error}")
+        return True
 
 
 async def emu_callback_handler(callback: CallbackQuery) -> None:
@@ -3723,6 +3947,10 @@ async def handle_menu_message(message: Message) -> bool:
         await show_calculator_menu(message)
         return True
 
+    if text == MENU_TRACKING:
+        await show_tracking_menu(message)
+        return True
+
     if text == MENU_AI_ASSISTANT:
         await show_ai_assistant(message)
         return True
@@ -3797,6 +4025,10 @@ async def answer_ai_question(message: Message, question: str) -> None:
     context_parts: list[str] = []
 
     try:
+        if looks_like_tracking_question(question):
+            if await answer_tracking_question(message, question):
+                return
+
         if any(word in lowered for word in ["narx", "kalk", "qancha", "kg", "кг", "sum", "so'm", "som", "цена", "стоимость", "сколько"]):
             calculator_answer = await calculate_from_ai_question(message, question)
             if calculator_answer:
@@ -3960,7 +4192,14 @@ async def handle_service_text(message: Message) -> bool:
             return True
 
     if mode == "ai":
+        if looks_like_tracking_question(text):
+            await answer_tracking_question(message, text)
+            return True
         await answer_ai_question(message, text)
+        return True
+
+    if mode == "tracking":
+        await answer_tracking_question(message, text)
         return True
 
     if mode == "calculator" and state.get("step") != "weight":
@@ -4139,6 +4378,9 @@ async def text_handler(message: Message) -> None:
         return
 
     if message.chat.id not in sender_sessions:
+        if looks_like_tracking_question(text):
+            await answer_tracking_question(message, text)
+            return
         if any(word in normalized_menu_text.casefold() for word in ["qancha", "narx", "kg", "кг", "so'm", "som"]):
             await answer_ai_question(message, text)
             return
@@ -4235,6 +4477,7 @@ async def setup_bot_commands(bot: Bot) -> None:
             BotCommand(command="setup", description="ФИЗ ЛИЦО jo'natuvchi sozlamalari"),
             BotCommand(command="ofislar", description="EMU ofislar ro'yxati"),
             BotCommand(command="kalkulyator", description="Yetkazib berish narxini hisoblash"),
+            BotCommand(command="track", description="Trek raqam bo'yicha holatni tekshirish"),
             BotCommand(command="ai", description="EMU bo'yicha AI yordamchi"),
             BotCommand(command="help", description="Foydalanish bo'yicha yordam"),
             BotCommand(command="excel", description="Excel faylni yuborish"),
@@ -4272,6 +4515,7 @@ async def main() -> None:
     dispatcher.message.register(setup_handler, Command("setup"))
     dispatcher.message.register(offices_handler, Command("ofislar"))
     dispatcher.message.register(calculator_handler, Command("kalkulyator"))
+    dispatcher.message.register(tracking_handler, Command("track"))
     dispatcher.message.register(ai_handler, Command("ai"))
     dispatcher.message.register(help_handler, Command("help"))
     dispatcher.message.register(excel_handler, Command("excel"))
