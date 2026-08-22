@@ -150,6 +150,7 @@ logger = logging.getLogger(__name__)
 
 excel_lock = asyncio.Lock()
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+AI_LOCATION_SUGGESTIONS_ENABLED = bool(OPENAI_API_KEY)
 sender_sessions: dict[int, dict[str, str]] = {}
 setup_states: dict[int, dict[str, Any]] = {}
 reply_locks: dict[int, asyncio.Lock] = {}
@@ -160,6 +161,7 @@ service_states: dict[int, dict[str, Any]] = {}
 emu_api_cache: dict[str, tuple[float, Any]] = {}
 emu_database_cache: dict[str, Any] | None = None
 shipment_numbering_cache: dict[str, Any] | None = None
+location_ai_cache: dict[str, tuple[str, str, str]] = {}
 
 DISPLAY_NUMBER_INDEX = 0
 IMPORT_NUMBER_INDEX = 1
@@ -2048,9 +2050,15 @@ def resolve_allowed_recipient_location(customer: dict[str, Any]) -> tuple[str, s
     match = resolve_location(address, note, region_hint)
     review = match.note
     if not match.server:
+        ai_server, ai_note = ai_suggest_recipient_location(address, note, region_hint)
+        if ai_server:
+            return ai_server, ai_note
         source = address or note or region_hint
+        details = "; ".join(part for part in [ai_note] if part)
         if source:
             review = f"Город-получатель uchun shahar/tuman topilmadi ({source})"
+            if details:
+                review = f"{review}; {details}"
     return match.server, review
 
 
@@ -3258,6 +3266,99 @@ def call_openai_response(**kwargs: Any) -> Any:
             last_error = error
             break
     raise RuntimeError(f"OpenAI so'rovi muvaffaqiyatsiz tugadi: {last_error}")
+
+
+def ai_suggest_recipient_location(address: str, note: str = "", region_hint: str = "") -> tuple[str, str]:
+    if not AI_LOCATION_SUGGESTIONS_ENABLED or openai_client is None:
+        return "", ""
+
+    source_parts = [clean_text(address), clean_text(note), clean_text(region_hint)]
+    source_text = " | ".join(part for part in source_parts if part)
+    if not source_text:
+        return "", ""
+
+    cache_key = normalize_location_key(source_text)
+    cached = location_ai_cache.get(cache_key)
+    if cached is not None:
+        suggested_server, suggested_note, confidence = cached
+        if confidence in {"high", "medium"}:
+            return suggested_server, suggested_note
+        return "", suggested_note
+
+    location_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "server": {"type": "string"},
+            "confidence": {"type": "string", "enum": ["high", "medium", "low", "none"]},
+            "reason": {"type": "string"},
+        },
+        "required": ["server", "confidence", "reason"],
+    }
+
+    prompt = (
+        "Quyidagi manzil yoki hudud yozuvini EMU ro'yxatidagi bitta Город-получатель nomiga yaqinlashtiring. "
+        "Faqat quyidagi ro'yxatdan bittasini tanlash mumkin, aks holda bo'sh string qaytaring.\n\n"
+        f"Ruxsat etilgan ro'yxat:\n{LOCATION_LIST_FOR_PROMPT}\n\n"
+        "Qoidalar:\n"
+        "- Faqat mavjud ro'yxatdan tanlang.\n"
+        "- Ishonch past bo'lsa server bo'sh string bo'lsin.\n"
+        "- reason maydonida juda qisqa izoh yozing.\n"
+        f"- Tekshirilayotgan yozuv: {source_text}"
+    )
+
+    try:
+        response = call_openai_response(
+            model=OPENAI_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Siz EMU hudud nomlarini moslashtirasiz. "
+                        "Faqat berilgan ro'yxat ichidan tanlang. Taxminiy bo'lsa confidence=low yoki none qiling."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "recipient_location_suggestion",
+                    "schema": location_schema,
+                    "strict": True,
+                }
+            },
+        )
+        output_text = clean_text(getattr(response, "output_text", ""))
+        payload = json.loads(output_text) if output_text else {}
+    except Exception as error:
+        logger.warning("AI recipient location suggestion failed for %r: %s", source_text, error)
+        return "", ""
+
+    suggested_server = clean_text(payload.get("server"))
+    confidence = clean_text(payload.get("confidence")).lower() or "none"
+    reason = clean_text(payload.get("reason"))
+    if suggested_server and suggested_server not in ALLOWED_RECIPIENT_LOCATIONS:
+        suggested_server = ""
+        confidence = "none"
+        reason = "AI ro'yxatdan tashqari qiymat qaytardi"
+
+    if suggested_server:
+        resolved = resolve_location(suggested_server)
+        suggested_server = resolved.server
+
+    note = ""
+    if suggested_server and confidence in {"high", "medium"}:
+        note = f"AI taxmini: {suggested_server}"
+        if reason:
+            note = f"{note} ({reason})"
+        location_ai_cache[cache_key] = (suggested_server, note, confidence)
+        return suggested_server, note
+
+    if reason:
+        note = f"AI ham aniqlay olmadi ({reason})"
+    location_ai_cache[cache_key] = ("", note, confidence)
+    return "", note
 
 
 def call_openai_with_text(text: str) -> list[dict[str, Any]]:
