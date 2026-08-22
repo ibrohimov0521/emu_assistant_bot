@@ -2944,29 +2944,38 @@ def format_tracking_result(result: dict[str, Any], question: str) -> str:
     courier_name = clean_text(detail.get("courier_name"))
     courier_phone = clean_text(detail.get("courier_phone"))
 
+    number_value = clean_text(parcel.get("orderno")) or clean_text(detail.get("orderno")) or labels["unknown"]
+    barcode_value = clean_text(parcel.get("barcode")) or clean_text(detail.get("barcode") or detail.get("awb")) or labels["unknown"]
+    delivered_to_value = clean_text(detail.get("deliveredto"))
+    delivered_date_value = clean_text(detail.get("delivereddate"))
+
     lines = [
         labels["title"],
         "",
-        f"{labels['code']}: {clean_text(parcel.get('orderno')) or clean_text(detail.get('orderno')) or labels['unknown']}",
-        f"{labels['barcode']}: {clean_text(parcel.get('barcode')) or clean_text(detail.get('barcode') or detail.get('awb')) or labels['unknown']}",
+        f"{labels['code']}: {number_value}",
         f"{labels['status']}: {status_name}",
     ]
+    if barcode_value and barcode_value != number_value:
+        lines.insert(3, f"{labels['barcode']}: {barcode_value}")
     if status_title:
         lines.append(f"{labels['status_title']}: {status_title}")
 
     optional_pairs = [
-        (labels["order"], clean_text(detail.get("ordercode"))),
         (labels["created"], clean_text(parcel.get("created_at"))),
         (labels["receiver_date"], clean_text(detail.get("receiver_date"))),
         (labels["price"], clean_text(parcel.get("cod_price")) or clean_text(detail.get("price"))),
         (labels["weight"], clean_text(detail.get("weight")) or clean_text(parcel.get("weight"))),
         (labels["quantity"], clean_text(detail.get("quantity"))),
         (labels["receiver_town"], clean_text(detail.get("receiver_town"))),
-        (labels["delivered_to"], clean_text(detail.get("deliveredto"))),
     ]
     for label, value in optional_pairs:
         if value:
             lines.append(f"{label}: {value}")
+
+    if delivered_date_value:
+        lines.append(f"{labels['delivered_to']}: {delivered_date_value}")
+    elif delivered_to_value and not re.search(r"\bcfg\b", delivered_to_value, re.IGNORECASE):
+        lines.append(f"{labels['delivered_to']}: {delivered_to_value}")
 
     if courier_name or courier_phone:
         lines.append(f"{labels['courier']}: {' | '.join(part for part in [courier_name, courier_phone] if part)}")
@@ -2985,7 +2994,9 @@ def format_tracking_result(result: dict[str, Any], question: str) -> str:
 
         lines.append("")
         lines.append(labels["history"] + ":")
-        for item in sorted_history[:5]:
+        seen_history_rows: set[tuple[str, str, str]] = set()
+        shown_count = 0
+        for item in sorted_history:
             event_time = clean_text(item.get("event_time"))
             event_town = clean_text(item.get("event_town"))
             item_status = item.get("status") if isinstance(item.get("status"), dict) else {}
@@ -2996,9 +3007,18 @@ def format_tracking_result(result: dict[str, Any], question: str) -> str:
                 or clean_text(item.get("message"))
             )
             message = clean_text(item.get("status_message")) or clean_text(item.get("message"))
+            if message and re.search(r"\bcfg\b", message, re.IGNORECASE):
+                message = ""
+            dedupe_key = (event_time, event_town, item_status_name)
+            if dedupe_key in seen_history_rows:
+                continue
+            seen_history_rows.add(dedupe_key)
             parts = [part for part in [event_time, event_town, item_status_name, message] if part]
             if parts:
                 lines.append(f"- {' | '.join(parts)}")
+                shown_count += 1
+                if shown_count >= 5:
+                    break
 
     return "\n".join(lines)
 
