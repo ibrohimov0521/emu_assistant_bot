@@ -2935,7 +2935,12 @@ def format_tracking_result(result: dict[str, Any], question: str) -> str:
         or clean_text(detail_status.get("name"))
         or labels["unknown"]
     )
-    status_title = clean_text(detail_status.get("title")) or clean_text(detail.get("deliveredto")) or clean_text(parcel.get("deliveredto"))
+    status_title = (
+        clean_text(detail_status.get("title"))
+        or clean_text(status.get("title"))
+        or clean_text(detail.get("deliveredto"))
+        or clean_text(parcel.get("deliveredto"))
+    )
     courier_name = clean_text(detail.get("courier_name"))
     courier_phone = clean_text(detail.get("courier_phone"))
 
@@ -2967,15 +2972,31 @@ def format_tracking_result(result: dict[str, Any], question: str) -> str:
         lines.append(f"{labels['courier']}: {' | '.join(part for part in [courier_name, courier_phone] if part)}")
 
     if isinstance(history, list) and history:
+        def history_sort_key(item: Any) -> str:
+            if not isinstance(item, dict):
+                return ""
+            return clean_text(item.get("event_time")) or ""
+
+        sorted_history = sorted(
+            [item for item in history if isinstance(item, dict)],
+            key=history_sort_key,
+            reverse=True,
+        )
+
         lines.append("")
         lines.append(labels["history"] + ":")
-        for item in history[:5]:
-            if not isinstance(item, dict):
-                continue
+        for item in sorted_history[:5]:
             event_time = clean_text(item.get("event_time"))
             event_town = clean_text(item.get("event_town"))
-            message = clean_text(item.get("status_message"))
-            parts = [part for part in [event_time, event_town, message] if part]
+            item_status = item.get("status") if isinstance(item.get("status"), dict) else {}
+            item_status_name = (
+                clean_text(item_status.get("name"))
+                or clean_text(item_status.get("title"))
+                or clean_text(item.get("status_message"))
+                or clean_text(item.get("message"))
+            )
+            message = clean_text(item.get("status_message")) or clean_text(item.get("message"))
+            parts = [part for part in [event_time, event_town, item_status_name, message] if part]
             if parts:
                 lines.append(f"- {' | '.join(parts)}")
 
