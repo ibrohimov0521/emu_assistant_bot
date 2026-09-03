@@ -149,6 +149,19 @@ class ExcelImportTests(unittest.TestCase):
         self.assertEqual("ABC-1", customers[0]["source_cipher"])
         self.assertEqual("Самарканд", customers[0]["recipient_region_ru"])
 
+    def test_three_column_uzbek_excel_keeps_names_without_a_cipher(self):
+        customers = self.extract(
+            [
+                ["Ism", "Telefon raqam", "Manzil"],
+                ["Darmen", "+998998234150", "Toshkent viloyati, Parkent tumani, Samsarak MFY, Qadriyat kochasi 12"],
+                ["Abduvali", "+998999671686", "Xorazm viloyati, Urganch shahar, Al-Xorazmiy ko'chasi 5"],
+            ]
+        )
+        self.assertEqual(["Darmen", "Abduvali"], [customer["full_name"] for customer in customers])
+        self.assertEqual(["", ""], [customer["source_cipher"] for customer in customers])
+        self.assertEqual(["Паркент", "Ургенч"], [customer["recipient_region_ru"] for customer in customers])
+        self.assertEqual(["", ""], [customer["needs_review"] for customer in customers])
+
     def test_headerless_excel_with_a_leading_row_number_keeps_address(self):
         customers = self.extract(
             [["1", "ABC-2", "998901112233", "Ali Valiyev", "Xorazm viloyati, Urganch, Al-Xorazmiy ko'chasi 5"]]
@@ -158,6 +171,12 @@ class ExcelImportTests(unittest.TestCase):
         self.assertEqual("Ali Valiyev", customers[0]["full_name"])
         self.assertEqual("Xorazm viloyati, Urganch, Al-Xorazmiy ko'chasi 5", customers[0]["address"])
         self.assertEqual("Ургенч", customers[0]["recipient_region_ru"])
+
+    def test_unknown_home_address_keeps_its_text_and_reports_the_source(self):
+        sender = dict(OFFICE_SENDER, delivery_type="НА ДОМ")
+        row = main.prepare_rows([customer("Chinor metro yoniga")], sender)[0]
+        self.assertEqual("Chinor metro yoniga", row[ADDRESS_COLUMN])
+        self.assertIn("(Chinor metro yoniga)", row[REVIEW_COLUMN])
 
 
 if __name__ == "__main__":

@@ -2047,6 +2047,20 @@ def format_recipient_address(value: Any, recipient_location: str, delivery_type:
     return "", ""
 
 
+AI_LOCATION_CONTEXT_RE = re.compile(
+    r"(?i)\b("
+    r"viloyat|viloyati|tuman|tumani|shahar|shahri|oblast|rayon|gorod|"
+    r"область|район|город|республика|respublika"
+    r")\b"
+)
+
+
+def has_location_context(*values: Any) -> bool:
+    """AI taxmini uchun manzilda kamida hududga oid tayanch bo'lishi kerak."""
+
+    return bool(AI_LOCATION_CONTEXT_RE.search(" ".join(clean_text(value) for value in values if clean_text(value))))
+
+
 def resolve_allowed_recipient_location(customer: dict[str, Any]) -> tuple[str, str]:
     """Город-получатель uchun справочникdagi shahar/tuman nomini aniqlaydi.
 
@@ -2059,9 +2073,11 @@ def resolve_allowed_recipient_location(customer: dict[str, Any]) -> tuple[str, s
     match = resolve_location(address, note, region_hint)
     review = match.note
     if not match.server:
-        ai_server, ai_note = ai_suggest_recipient_location(address, note, region_hint)
-        if ai_server:
-            return ai_server, ai_note
+        ai_note = ""
+        if has_location_context(address, note, region_hint):
+            ai_server, ai_note = ai_suggest_recipient_location(address, note, region_hint)
+            if ai_server:
+                return ai_server, ai_note
         source = address or note or region_hint
         details = "; ".join(part for part in [ai_note] if part)
         if source:
@@ -3487,6 +3503,8 @@ def excel_customer_header_field(value: str) -> str:
         return "cipher"
     if "kompani" in key and "poluch" in key:
         return ""
+    if key in {"ism", "fio", "full_name", "fullname", "mijozismi"}:
+        return "full_name"
     if any(marker in key for marker in ("fiopoluch", "ismfamili", "fullname", "mijozismi")):
         return "full_name"
     if key in {"poluchatel", "poluchatelya", "mijoz"}:
@@ -3516,6 +3534,11 @@ def inferred_excel_customer_columns(values: list[str]) -> dict[str, int]:
         return {field: index for index, field in enumerate(EXCEL_CUSTOMER_FIELDS) if index < len(values)}
 
     columns = {"phone": phone_index}
+    if phone_index == 1 and len(values) == 3:
+        # Ism, telefon, manzil - shifr berilmagan eng ko'p uchraydigan format.
+        columns["full_name"] = 0
+        columns["address"] = 2
+        return columns
     if phone_index > 0:
         # 1, SHIFR, TELEFON, FIO, MANZIL ko'rinishidagi jadvaldagi birinchi
         # qiymat xizmat raqami, shifr esa telefondan bevosita oldingi ustun.
@@ -3568,8 +3591,12 @@ def extract_customers_from_excel_bytes(file_bytes: bytes) -> list[dict[str, Any]
                         product_name = extra
                 if cipher and not any([phone, full_name, address]):
                     continue
-                if len(values) < 4:
-                    extra_values.append("Excel qatorida 4 ta asosiy ustun to'liq emas")
+                required_fields = ("phone", "full_name", "address")
+                missing_fields = [field for field in required_fields if not value_from_excel_columns(values, active_columns, field)]
+                if missing_fields:
+                    labels = {"phone": "telefon", "full_name": "ism", "address": "manzil"}
+                    missing_text = ", ".join(labels[field] for field in missing_fields)
+                    extra_values.append(f"Excel qatorida {missing_text} yo'q, tekshirish kerak")
 
                 if not any([cipher, phone, full_name, address]):
                     continue
