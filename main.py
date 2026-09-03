@@ -3465,25 +3465,99 @@ def looks_like_excel_header(values: list[str]) -> bool:
     return sum(1 for word in header_words if word in joined) >= 2
 
 
+EXCEL_CUSTOMER_FIELDS = ("cipher", "phone", "full_name", "address")
+
+
+def excel_customer_header_field(value: str) -> str:
+    """Excel sarlavhasidagi qabul qiluvchi maydonini aniqlaydi.
+
+    Mijozlar fayllari turli operatorlardan keladi: ustunlar nomi o'zbekcha,
+    ruscha yoki inglizcha va joylashuvi turlicha bo'lishi mumkin. Shu sababli
+    importda ustun raqamini qotirib qo'ymaymiz.
+    """
+
+    key = normalize_location_key(value)
+    if not key:
+        return ""
+    if any(marker in key for marker in ("telefon", "phone", "telpoluch", "telmijoz")):
+        return "phone"
+    if any(marker in key for marker in ("adres", "address", "manzil", "yashashjoy")):
+        return "address"
+    if any(marker in key for marker in ("shifr", "cipher", "kodklient", "clientcode")):
+        return "cipher"
+    if "kompani" in key and "poluch" in key:
+        return ""
+    if any(marker in key for marker in ("fiopoluch", "ismfamili", "fullname", "mijozismi")):
+        return "full_name"
+    if key in {"poluchatel", "poluchatelya", "mijoz"}:
+        return "full_name"
+    return ""
+
+
+def excel_customer_column_map(values: list[str]) -> dict[str, int]:
+    columns: dict[str, int] = {}
+    for index, value in enumerate(values):
+        field = excel_customer_header_field(value)
+        if field and field not in columns:
+            columns[field] = index
+    return columns
+
+
+def inferred_excel_customer_columns(values: list[str]) -> dict[str, int]:
+    """Sarlavhasiz oddiy Excel qatori uchun asosiy ustunlarni topadi."""
+
+    phone_index = -1
+    for index, value in enumerate(values):
+        normalized_phone, phone_review = normalize_phone_list(value)
+        if normalized_phone and not phone_review:
+            phone_index = index
+            break
+    if phone_index < 0:
+        return {field: index for index, field in enumerate(EXCEL_CUSTOMER_FIELDS) if index < len(values)}
+
+    columns = {"phone": phone_index}
+    if phone_index > 0:
+        # 1, SHIFR, TELEFON, FIO, MANZIL ko'rinishidagi jadvaldagi birinchi
+        # qiymat xizmat raqami, shifr esa telefondan bevosita oldingi ustun.
+        columns["cipher"] = phone_index - 1
+    if phone_index + 1 < len(values):
+        columns["full_name"] = phone_index + 1
+    if phone_index + 2 < len(values):
+        columns["address"] = phone_index + 2
+    return columns
+
+
+def value_from_excel_columns(values: list[str], columns: dict[str, int], field: str) -> str:
+    index = columns.get(field, -1)
+    return values[index] if 0 <= index < len(values) else ""
+
+
 def extract_customers_from_excel_bytes(file_bytes: bytes) -> list[dict[str, Any]]:
     workbook = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     customers: list[dict[str, Any]] = []
     try:
         for sheet in workbook.worksheets:
+            columns: dict[str, int] | None = None
             for row_index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
                 values = [clean_text(value) for value in row]
                 while values and not values[-1]:
                     values.pop()
                 if not any(values):
                     continue
-                if row_index == 1 and looks_like_excel_header(values):
+
+                header_columns = excel_customer_column_map(values)
+                if len(header_columns) >= 2:
+                    columns = header_columns
                     continue
 
-                cipher = values[0] if len(values) > 0 else ""
-                phone = values[1] if len(values) > 1 else ""
-                full_name = values[2] if len(values) > 2 else ""
-                address = values[3] if len(values) > 3 else ""
-                extra_values = [value for value in values[4:] if value]
+                # Eski, sarlavhasiz 4 ustunli fayllar ham ishlashi kerak.
+                active_columns = columns or inferred_excel_customer_columns(values)
+                cipher = value_from_excel_columns(values, active_columns, "cipher")
+                phone = value_from_excel_columns(values, active_columns, "phone")
+                full_name = value_from_excel_columns(values, active_columns, "full_name")
+                address = value_from_excel_columns(values, active_columns, "address")
+                core_indices = set(active_columns.values())
+                extra_values = [value for index, value in enumerate(values) if value and index not in core_indices]
                 declared_price = ""
                 product_name = ""
                 for extra in extra_values:

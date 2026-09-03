@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import sys
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock
+
+from openpyxl import Workbook
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
@@ -122,6 +125,39 @@ class ExcelImportTests(unittest.TestCase):
     def test_excel_row_location_is_resolved(self):
         self.assertEqual("Денау", main.resolve_server_location("denov tumani, 5-uy"))
         self.assertEqual("Ташкент", main.resolve_server_location("Toshkent shahri, Amir Temur ko'chasi"))
+
+    def extract(self, rows: list[list[str]]) -> list[dict[str, str]]:
+        workbook = Workbook()
+        sheet = workbook.active
+        for row in rows:
+            sheet.append(row)
+        buffer = BytesIO()
+        workbook.save(buffer)
+        return main.extract_customers_from_excel_bytes(buffer.getvalue())
+
+    def test_excel_headers_can_be_in_any_column_order(self):
+        customers = self.extract(
+            [
+                ["№", "ФИО получателя", "Адрес получателя", "Телефон получателя", "Шифр клиента"],
+                ["1", "Ali Valiyev", "Samarqand shahri, Registon ko'chasi 10", "998901112233", "ABC-1"],
+            ]
+        )
+        self.assertEqual(1, len(customers))
+        self.assertEqual("Ali Valiyev", customers[0]["full_name"])
+        self.assertEqual("998901112233", customers[0]["phone"])
+        self.assertEqual("Samarqand shahri, Registon ko'chasi 10", customers[0]["address"])
+        self.assertEqual("ABC-1", customers[0]["source_cipher"])
+        self.assertEqual("Самарканд", customers[0]["recipient_region_ru"])
+
+    def test_headerless_excel_with_a_leading_row_number_keeps_address(self):
+        customers = self.extract(
+            [["1", "ABC-2", "998901112233", "Ali Valiyev", "Xorazm viloyati, Urganch, Al-Xorazmiy ko'chasi 5"]]
+        )
+        self.assertEqual(1, len(customers))
+        self.assertEqual("ABC-2", customers[0]["source_cipher"])
+        self.assertEqual("Ali Valiyev", customers[0]["full_name"])
+        self.assertEqual("Xorazm viloyati, Urganch, Al-Xorazmiy ko'chasi 5", customers[0]["address"])
+        self.assertEqual("Ургенч", customers[0]["recipient_region_ru"])
 
 
 if __name__ == "__main__":
